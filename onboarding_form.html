@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Information - ClientWise</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        :root {
+            --brand-purple: #5a239e;
+            --brand-purple-hover: #703abc;
+        }
+        .btn-brand { background-color: var(--brand-purple); color: white; }
+        .btn-brand:hover:not(:disabled) { background-color: var(--brand-purple-hover); }
+        .btn-brand:disabled { opacity: 0.6; cursor: not-allowed; }
+        .form-input, .form-select, .form-textarea { border-color: #d1d5db; /* gray-300 */ }
+        .form-input:focus, .form-select:focus, .form-textarea:focus { --tw-ring-color: var(--brand-purple); border-color: var(--brand-purple); }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid var(--brand-purple); border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin: 0 auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        h3 { font-size: 1.1rem; font-weight: 600; color: #374151; /* gray-700 */ margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e5e7eb; /* gray-200 */ }
+        .estimation-card { background-color: #f9fafb; /* gray-50 */ border: 1px solid #e5e7eb; padding: 1rem; border-radius: 0.5rem; }
+        .estimation-card dt { font-weight: 500; color: #4b5563; /* gray-600 */ }
+        .estimation-card dd { color: var(--brand-purple); font-weight: 600; font-size: 1.1rem; }
+        .estimation-card ul { margin-top: 0.5rem; padding-left: 1rem; }
+        .estimation-card li { font-size: 0.75rem; color: #6b7280; /* gray-500 */ }
+        .message-success { color: #166534; background-color: #dcfce7; border: 1px solid #86efac; }
+        .message-error { color: #b91c1c; background-color: #fee2e2; border: 1px solid #fca5a5; }
+
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gradient-to-br from-purple-50 via-white to-yellow-50 min-h-screen flex items-center justify-center p-4 py-8">
+
+    <div class="bg-white p-6 md:p-10 rounded-xl shadow-xl w-full max-w-3xl">
+        <div class="text-center mb-8">
+            <h1 class="text-2xl font-semibold text-[--brand-purple]">Client Information Form</h1>
+            <p class="text-sm text-gray-600 mt-1">Please provide your details below to help us serve you better.</p>
+        </div>
+        <div id="message-area" class="mb-4 text-center text-sm font-medium p-3 rounded-md"></div>
+
+        <form id="onboarding-form" class="space-y-6">
+            <input type="hidden" id="agentId" name="agentId">
+
+            <section>
+                <h3><i class="fas fa-user mr-2 text-gray-400"></i>Personal Information</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mt-4">
+                    <div>
+                        <label for="name" class="block text-sm font-medium text-gray-700">Full Name*</label>
+                        <input type="text" id="name" name="name" required class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="dob" class="block text-sm font-medium text-gray-700">Date of Birth</label>
+                        <input type="date" id="dob" name="dob" max="2015-01-01" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="email" class="block text-sm font-medium text-gray-700">Email Address</label>
+                        <input type="email" id="email" name="email" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="phone" class="block text-sm font-medium text-gray-700">Phone Number</label>
+                        <input type="tel" id="phone" name="phone" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                        <p class="text-xs text-gray-500 mt-1">Either Email or Phone is recommended.</p>
+                    </div>
+                     <div>
+                        <label for="maritalStatus" class="block text-sm font-medium text-gray-700">Marital Status</label>
+                        <select id="maritalStatus" name="maritalStatus" class="mt-1 block w-full form-select rounded-md shadow-sm"> <option value="">Select...</option> <option>Single</option> <option>Married</option> <option>Divorced</option> <option>Widowed</option> </select>
+                    </div>
+                    <div>
+                        <label for="dependents" class="block text-sm font-medium text-gray-700">Number of Dependents</label>
+                        <input type="number" id="dependents" name="dependents" min="0" step="1" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div class="md:col-span-2">
+                        <label for="address" class="block text-sm font-medium text-gray-700">Full Address</label>
+                        <textarea id="address" name="address" rows="2" class="mt-1 block w-full form-textarea rounded-md shadow-sm"></textarea>
+                    </div>
+                     <div>
+                        <label for="city" class="block text-sm font-medium text-gray-700">Current City</label>
+                        <input type="text" id="city" name="city" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="housingType" class="block text-sm font-medium text-gray-700">Housing Type</label>
+                        <select id="housingType" name="housingType" class="mt-1 block w-full form-select rounded-md shadow-sm"> <option value="">Select...</option> <option>Owned</option> <option>Rented</option> <option>Family-owned</option> </select>
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                 <h3><i class="fas fa-briefcase mr-2 text-gray-400"></i>Professional & Financial Snapshot</h3>
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mt-4">
+                     <div>
+                        <label for="jobProfile" class="block text-sm font-medium text-gray-700">Job Profile</label>
+                         <select id="jobProfile" name="jobProfile" class="mt-1 block w-full form-select rounded-md shadow-sm"> <option value="">Select...</option> <option>Salaried</option> <option>Business Owner</option> <option>Professional</option> <option>Student</option> <option>Homemaker</option> <option>Retired</option> <option>Other</option> </select>
+                    </div>
+                    <div>
+                        <label for="income" class="block text-sm font-medium text-gray-700">Approx. Annual Income (₹)</label>
+                        <input type="number" id="income" name="income" placeholder="e.g., 1500000" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="liability" class="block text-sm font-medium text-gray-700">Approx. Current Liability (₹ Loans)</label>
+                        <input type="number" id="liability" name="liability" placeholder="e.g., 500000" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                 </div>
+            </section>
+
+             <section>
+                 <h3><i class="fas fa-car mr-2 text-gray-400"></i>Asset Information (Optional)</h3>
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4 mt-4">
+                     <div>
+                        <label for="vehicleCount" class="block text-sm font-medium text-gray-700">Number of Vehicles</label>
+                        <input type="number" id="vehicleCount" name="vehicleCount" min="0" step="1" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="vehicleType" class="block text-sm font-medium text-gray-700">Vehicle Type(s)</label>
+                        <input type="text" id="vehicleType" name="vehicleType" placeholder="e.g., Car, Bike" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                     <div>
+                        <label for="vehicleCost" class="block text-sm font-medium text-gray-700">Approx. Total Vehicle Cost (₹)</label>
+                        <input type="number" id="vehicleCost" name="vehicleCost" placeholder="e.g., 800000" class="mt-1 block w-full form-input rounded-md shadow-sm">
+                    </div>
+                  </div>
+             </section>
+
+            <div class="pt-6 mt-6 border-t border-gray-200">
+                <button type="submit" id="submit-button" class="w-full btn-brand font-semibold py-2.5 px-4 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[--brand-purple]">
+                    Submit Details
+                </button>
+                <div id="loading-spinner" class="hidden mt-4"> <div class="spinner"></div> </div>
+            </div>
+        </form>
+
+        <div id="estimation-results" class="hidden mt-8 pt-6 border-t">
+            <h2 class="text-xl font-semibold text-center text-[--brand-purple] mb-6">Thank You & Coverage Suggestions</h2>
+            <p class="text-center text-sm text-gray-600 mb-6">Your details have been submitted successfully. Based on the information provided, here are some initial coverage estimations you might consider discussing further:</p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="estimation-card" id="health-estimation"> <dt><i class="fas fa-heartbeat mr-2"></i>Health Insurance</dt> <dd id="health-amount">Calculating...</dd> <ul id="health-notes"></ul> </div>
+                <div class="estimation-card" id="life-estimation"> <dt><i class="fas fa-umbrella mr-2"></i>Life Insurance (Term)</dt> <dd id="life-amount">Calculating...</dd> <ul id="life-notes"></ul> </div>
+                <div class="estimation-card" id="motor-estimation"> <dt><i class="fas fa-car-crash mr-2"></i>Motor Insurance</dt> <dd id="motor-amount">Calculating...</dd> <ul id="motor-notes"></ul> </div>
+            </div>
+            <p class="text-center text-xs text-gray-500 mt-6">Note: These are automated estimations only and not financial advice. Your agent will contact you to discuss your specific needs and provide personalized recommendations.</p>
+        </div>
+
+    </div>
+
+    <script>
+        const form = document.getElementById('onboarding-form');
+        const messageArea = document.getElementById('message-area');
+        const submitButton = document.getElementById('submit-button');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const agentIdInput = document.getElementById('agentId');
+        const estimationResultsDiv = document.getElementById('estimation-results');
+        const healthAmountEl = document.getElementById('health-amount');
+        const healthNotesEl = document.getElementById('health-notes');
+        const lifeAmountEl = document.getElementById('life-amount');
+        const lifeNotesEl = document.getElementById('life-notes');
+        const motorAmountEl = document.getElementById('motor-amount');
+        const motorNotesEl = document.getElementById('motor-notes');
+
+        // --- Initialization ---
+        let agentId = null; // Store valid agent ID
+
+        function initializeForm() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const idFromUrl = urlParams.get('agentId');
+            const parsedId = parseInt(idFromUrl, 10);
+
+            if (!idFromUrl || isNaN(parsedId) || parsedId <= 0) {
+                displayMessage('Error: Invalid or missing agent information in the link. Cannot submit.', 'error');
+                if(submitButton) submitButton.disabled = true;
+            } else {
+                agentId = parsedId; // Store the valid ID
+                agentIdInput.value = agentId; // Set hidden input (optional)
+                displayMessage(''); // Clear any previous message
+                if(submitButton) submitButton.disabled = false;
+            }
+        }
+
+        // --- Display Messages ---
+        function displayMessage(msg, type = 'info') {
+             messageArea.textContent = msg;
+             // Reset classes first
+             messageArea.className = 'mb-4 text-center text-sm font-medium p-3 rounded-md';
+             if (type === 'error') {
+                 messageArea.classList.add('message-error');
+             } else if (type === 'success') {
+                  messageArea.classList.add('message-success');
+             } else {
+                 // Hide message area if message is empty
+                 if (!msg) messageArea.classList.add('hidden');
+                 else messageArea.classList.remove('hidden');
+             }
+              if (msg) messageArea.classList.remove('hidden'); // Ensure visible if there's a message
+        }
+
+        // --- Handle Form Submission ---
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (!agentId) { // Re-check if agentId is valid before submitting
+                 displayMessage('Error: Cannot submit form due to invalid agent link.', 'error');
+                 return;
+            }
+
+            displayMessage(''); // Clear previous messages
+            submitButton.disabled = true; loadingSpinner.classList.remove('hidden');
+            estimationResultsDiv.style.display = 'none';
+
+            const formData = new FormData(form);
+            const payload = {};
+            formData.forEach((value, key) => {
+                 if (key === 'agentId') return;
+                 if (['income', 'liability', 'vehicleCost'].includes(key)) { payload[key] = value.trim() !== '' ? parseFloat(value) : null; }
+                 else if (['dependents', 'vehicleCount'].includes(key)) { payload[key] = value.trim() !== '' ? parseInt(value, 10) : null; }
+                 else if (value.trim() !== '') { payload[key] = value.trim(); }
+                 else { payload[key] = null; }
+            });
+
+            // Basic validation
+             if (!payload.name || (!payload.email && !payload.phone)) {
+                 displayMessage('Error: Please provide your Name and either Email or Phone Number.', 'error');
+                 submitButton.disabled = false; loadingSpinner.classList.add('hidden');
+                 return;
+             }
+
+            console.log('Submitting Payloads:', payload);
+
+            try {
+                const response = await fetch(`/api/onboard?agentId=${agentId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (!response.ok) { throw new Error(result.error || `HTTP error! Status: ${response.status}`); }
+
+                displayMessage(result.message || 'Details submitted successfully!', 'success');
+                form.style.display = 'none'; // Hide form
+
+                if (result.estimation) {
+                    displayEstimations(result.estimation);
+                    estimationResultsDiv.style.display = 'block';
+                } else {
+                     console.warn('Estimation data missing from response.');
+                }
+
+            } catch (error) {
+                console.error('Submission Error:', error);
+                displayMessage(`Error: ${error.message}`, 'error');
+                submitButton.disabled = false;
+            } finally {
+                 loadingSpinner.classList.add('hidden');
+            }
+        });
+
+        // --- Display Estimation Results ---
+        function displayEstimations(estimation) {
+            const formatEstCurrency = (value) => { /* ... same formatting logic ... */ }; // Make sure this is defined
+             const formatAmount = (amount, unit) => {
+                 if (unit?.toLowerCase().includes('lakh')) return `₹${amount.toFixed(1)} L`;
+                 if (unit?.toLowerCase().includes('crore')) return `₹${amount.toFixed(2)} Cr`;
+                 return `₹${amount.toLocaleString('en-IN')}`; // Default for IDV etc.
+             };
+
+            if (estimation.health) {
+                healthAmountEl.textContent = formatAmount(estimation.health.amount, estimation.health.unit);
+                healthNotesEl.innerHTML = estimation.health.notes.map(n => `<li>${n}</li>`).join('');
+            }
+             if (estimation.life) {
+                lifeAmountEl.textContent = formatAmount(estimation.life.amount, estimation.life.unit);
+                lifeNotesEl.innerHTML = estimation.life.notes.map(n => `<li>${n}</li>`).join('');
+            }
+             if (estimation.motor) {
+                 motorAmountEl.textContent = formatAmount(estimation.motor.amount, estimation.motor.unit);
+                motorNotesEl.innerHTML = estimation.motor.notes.map(n => `<li>${n}</li>`).join('');
+            }
+        }
+
+        // --- Initialize on page load ---
+        initializeForm();
+
+    </script>
+
+</body>
+</html>

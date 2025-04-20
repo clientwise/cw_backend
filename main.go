@@ -13,6 +13,7 @@ import (
 	"log"
 	"math" // Import math package for rounding
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"            // Used for reading environment variable
 	"path/filepath" // Needed for file uploads
@@ -1428,32 +1429,76 @@ func createClientSegment(segment ClientSegment) (int64, error) {
 	return id, nil
 }
 
+type EmailConfig struct {
+	SMTPServer string
+	SMTPPort   string
+	Username   string
+	Password   string
+	EmailFrom  string
+}
+
 // --- Email (Mocked Functions) ---
-func sendEmail(to, subject, body string) error {
-	log.Printf("--- MOCK EMAIL ---\nTo: %s\nFrom: %s\nSubject: %s\nBody:\n%s\n--- END MOCK EMAIL ---", to, config.MockEmailFrom, subject, body)
+
+// sendEmail sends an email using the provided configuration.
+func sendEmail(to []string, subject, body string) error {
+	// func sendEmail(to, subject, body string) error {
+
+	// Construct the message.
+	msg := []byte(strings.Join([]string{
+		"From: " + "clientwise.co@gmail.com",
+		"To: " + strings.Join(to, ","), // Join multiple recipients with commas
+		"Subject: " + subject,
+		"MIME-version: 1.0",                          // Add MIME version header
+		"Content-Type: text/html; charset=\"UTF-8\"", // Specify HTML content type
+		"", // Empty line before the body
+		body,
+	}, "\r\n"))
+
+	config := EmailConfig{
+		SMTPServer: "smtp.gmail.com",        // Replace with your SMTP server
+		SMTPPort:   "587",                   // Replace with your SMTP port (e.g., 587 for TLS, 465 for SSL)
+		Username:   "admin@goclientwise.in", // Replace with your email address
+		Password:   "qoyh brmf joat dfge",   // Replace with your email password or an app password
+		EmailFrom:  "admin@goclientwise.in", // Replace with the sender email address
+	}
+
+	// Set up authentication.
+	auth := smtp.PlainAuth("", config.Username, config.Password, config.SMTPServer)
+
+	// Construct the server address.
+	addr := config.SMTPServer + ":" + config.SMTPPort
+
+	// Send the email.
+	err := smtp.SendMail(addr, auth, config.EmailFrom, to, msg)
+	if err != nil {
+		log.Printf("Error sending email: %v", err) // Log the error
+		return err                                 // Return the error for the caller to handle
+	}
+
+	log.Println("Email sent successfully!")
 	return nil
 }
 func sendVerificationEmail(email, token string) error {
 	subject := "Verify Your ClientWise Account"
 	verificationLink := config.VerificationURL + token
 	body := fmt.Sprintf(`<h2>Welcome!</h2><p>Click to verify: <a href="%s">Verify Email</a></p>`, verificationLink)
-	return sendEmail(email, subject, body)
+	return sendEmail([]string{email}, subject, body)
 }
 func sendWelcomeEmail(email string) error {
 	subject := "Welcome to ClientWise!"
 	body := `<h2>Welcome Aboard!</h2><p>Your account is ready.</p>`
-	return sendEmail(email, subject, body)
+	return sendEmail([]string{email}, subject, body)
 }
 func sendResetEmail(email, token string) error {
 	subject := "Reset Your ClientWise Password"
 	resetLink := config.ResetURL + token
 	body := fmt.Sprintf(`<h2>Password Reset</h2><p>Click to reset (1hr expiry): <a href="%s">Reset Password</a></p>`, resetLink)
-	return sendEmail(email, subject, body)
+	return sendEmail([]string{email}, subject, body)
 }
 func sendLoginNotification(email string) error {
 	subject := "Successful Login to ClientWise"
 	body := fmt.Sprintf(`<h2>Login Notification</h2><p>Your account (%s) was logged into.</p>`, email)
-	return sendEmail(email, subject, body)
+	return sendEmail([]string{email}, subject, body)
 }
 
 // --- Authentication Helpers ---
@@ -2322,6 +2367,7 @@ func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
 	// if err != nil { respondError(w, http.StatusInternalServerError, "Failed to fetch user details"); return }
 
 	profile, err := getAgentProfile(userID)
+
 	if err != nil && err != sql.ErrNoRows {
 		respondError(w, http.StatusInternalServerError, "Failed to fetch agent profile details")
 		return
@@ -2950,11 +2996,19 @@ func getDashboardMetrics(agentUserID int64) (*DashboardMetrics, error) {
 	}
 
 	// Commission Earned This Month
+	var commissionThisMonth *float64
 	err = db.QueryRow(`SELECT SUM(upfront_commission_amount) FROM policies WHERE agent_user_id = ? AND created_at >= ? AND created_at < ?`,
-		agentUserID, firstOfMonth, firstOfNextMonth).Scan(&metrics.CommissionThisMonth)
+		agentUserID, firstOfMonth, firstOfNextMonth).Scan(&commissionThisMonth)
 	if err != nil && err != sql.ErrNoRows {
 		log.Printf("ERROR: DB metrics commission: %v", err)
 		return nil, err
+	}
+
+	// Handle the case where there's no commission this month (NULL value)
+	if commissionThisMonth != nil {
+		metrics.CommissionThisMonth = *commissionThisMonth
+	} else {
+		metrics.CommissionThisMonth = 0.0 // Or any other appropriate default value
 	}
 
 	// New Leads This Week
@@ -3594,7 +3648,6 @@ func handleSuggestAgentTasks(w http.ResponseWriter, r *http.Request) {
 			// Determine clientId for the task, default to a sentinel or handle based on context
 			// Here, we require the AI to explicitly provide a valid clientId if the task is client-specific
 			var taskClientId int64 = 0 // Default: Task is not linked to a specific client
-			log.Printf("st.ClientID %s", st.ClientID)
 			if st.ClientID != nil {
 				// OptionClientIDal: Verify this client ID actually belongs to the agent before creating task?
 				// _, err := getClientByID(*st.ClientID, agentUserID)
@@ -3718,7 +3771,7 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "http://localhost:8080/verify?token=", ResetURL: "http://localhost:3000/reset-password?token=", MockEmailFrom: "noreply@clientwise.local", CorsOrigin: "http://localhost:3000", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "http://localhost:8080/verify?token=", ResetURL: "http://localhost:3000/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "http://localhost:3000", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
@@ -3767,6 +3820,7 @@ func main() {
 			r.Post("/suggest-tasks", handleSuggestAgentTasks)
 
 		})
+
 		// Client routes
 		r.Get("/api/clients", handleGetClients)
 		r.Post("/api/clients", handleCreateClient)
@@ -3811,9 +3865,11 @@ func main() {
 	})
 
 	// Start Server
+
 	log.Printf("SERVER: Starting server on %s, allowing requests from %s using Chi router\n", config.ListenAddr, config.CorsOrigin)
 	err = http.ListenAndServe(config.ListenAddr, r)
 	if err != nil {
 		log.Fatalf("FATAL: Could not start server: %v", err)
 	}
+
 }
