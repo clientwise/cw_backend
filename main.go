@@ -67,6 +67,20 @@ type OnboardingPayload struct {
 	VehicleCost   *float64 `json:"vehicleCost"`
 }
 
+type RenewalPolicyView struct {
+	Policy            // Embed original policy fields
+	ClientName string `json:"clientName"`
+}
+
+// NEW: Model for Paginated Response (can be used for Tasks, Activity)
+type PaginatedResponse struct {
+	Items       interface{} `json:"items"` // Can hold []Task, []ActivityLog etc.
+	TotalItems  int         `json:"totalItems"`
+	CurrentPage int         `json:"currentPage"`
+	PageSize    int         `json:"pageSize"`
+	TotalPages  int         `json:"totalPages"`
+}
+
 type SuggestedTask struct {
 	Description string `json:"description"`
 	DueDate     string `json:"dueDate"` // Expect YYYY-MM-DD or empty
@@ -398,6 +412,21 @@ type CreatePolicyPayload struct {
 	PolicyDocURL string  `json:"policyDocUrl"`
 }
 
+type AgentInsurerPOC struct {
+	// ID is mostly for DB internal use, might not need in JSON response/request often
+	ID          int64  `json:"id,omitempty"`
+	AgentUserID int64  `json:"-"` // Excluded from JSON, inferred from context
+	InsurerName string `json:"insurerName"`
+	PocEmail    string `json:"pocEmail"`
+}
+
+// Updated struct for GET /api/agents/profile response
+type FullAgentProfileWithPOCs struct {
+	User                           // Embed basic user info
+	AgentProfile                   // Embed extended profile info
+	InsurerPOCs  []AgentInsurerPOC `json:"insurerPOCs"` // Add the list of POCs
+}
+
 // NEW: Client Portal Token Model
 type ClientPortalToken struct {
 	Token       string    `json:"token"` // The secure token itself
@@ -405,6 +434,12 @@ type ClientPortalToken struct {
 	AgentUserID int64     `json:"agentUserId"`
 	ExpiresAt   time.Time `json:"expiresAt"`
 	CreatedAt   time.Time `json:"createdAt"`
+}
+
+type SendProposalPayload struct {
+	ClientID  int64  `json:"clientId"`
+	ProductID string `json:"productId"`
+	// Add other relevant info if needed, like custom message from agent
 }
 
 // NEW: Struct for data returned to public portal (subset of Client + related)
@@ -416,8 +451,15 @@ type PublicClientView struct {
 	Documents []Document `json:"documents"`
 	// Add other fields safe for client viewing if needed
 }
+type UpdateInsurerPOCsPayload struct {
+	POCs []AgentInsurerPOC `json:"pocs"`
+}
 
 type CreateSegmentPayload struct {
+	Name     string `json:"name"`
+	Criteria string `json:"criteria"`
+}
+type UpdateSegmentPayload struct {
 	Name     string `json:"name"`
 	Criteria string `json:"criteria"`
 }
@@ -616,6 +658,19 @@ func setupDatabase() error {
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_user_id INTEGER NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, activity_type TEXT NOT NULL, description TEXT NOT NULL, related_id TEXT, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "activity_log"); err != nil {
 		return err
 	}
+	// NEW: Agent Insurer POCs Table
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_insurer_pocs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent_user_id INTEGER NOT NULL,
+			insurer_name TEXT NOT NULL,
+			poc_email TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(agent_user_id, insurer_name) -- An agent should have only one POC per insurer
+		);`, "agent_insurer_pocs"); err != nil {
+		return err
+	}
+
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS client_portal_tokens (
         token TEXT PRIMARY KEY,
         client_id INTEGER NOT NULL,
@@ -744,6 +799,51 @@ func verifyToken(token string, purpose string) (userID int64, err error) {
 	return userID, nil
 }
 
+func getClientSegmentByID(segmentID int64, agentUserID int64) (*ClientSegment, error) {
+	log.Printf("DATABASE: Getting segment %d for agent %d\n", segmentID, agentUserID)
+	row := db.QueryRow(`SELECT id, agent_user_id, name, criteria, client_count, created_at
+                       FROM client_segments WHERE id = ? AND agent_user_id = ?`, segmentID, agentUserID)
+	segment := &ClientSegment{}
+	err := row.Scan(
+		&segment.ID, &segment.AgentUserID, &segment.Name, &segment.Criteria,
+		&segment.ClientCount, &segment.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		} // Not found or not owned
+		log.Printf("ERROR: Failed to scan segment row %d: %v\n", segmentID, err)
+		return nil, err
+	}
+	return segment, nil
+}
+
+// NEW: DB Function to update a client segment
+func updateClientSegment(segment ClientSegment) error {
+	log.Printf("DATABASE: Updating segment %d for agent %d\n", segment.ID, segment.AgentUserID)
+	stmt, err := db.Prepare(`UPDATE client_segments SET name = ?, criteria = ?
+                           WHERE id = ? AND agent_user_id = ?`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare update segment: %w", err)
+	}
+	defer stmt.Close()
+
+	res, err := stmt.Exec(segment.Name, segment.Criteria, segment.ID, segment.AgentUserID)
+	if err != nil {
+		return fmt.Errorf("failed to execute update segment: %w", err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	} // Indicate not found or wrong owner
+
+	log.Printf("DATABASE: Segment %d updated successfully\n", segment.ID)
+	return nil
+}
 func markUserVerified(userID int64) error {
 	stmt, err := db.Prepare("UPDATE users SET is_verified = 1 WHERE id = ?")
 	if err != nil {
@@ -795,6 +895,50 @@ func getAllClientTasks(clientID int64, agentUserID int64) ([]Task, error) {
 		return nil, err
 	}
 	return tasks, nil
+}
+
+type MonthlySalesData struct {
+	Month *string `json:"month"` // Changed to *string
+	Count int     `json:"count"`
+}
+
+func getMonthlyPolicyCount(agentUserID int64, months int) ([]MonthlySalesData, error) {
+	log.Printf("DATABASE: Fetching monthly policy counts for agent %d (last %d months)\n", agentUserID, months)
+	// Calculate the date 'months' ago from the start of the current month
+	firstOfMonth := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.UTC)
+	startDate := firstOfMonth.AddDate(0, -months, 0)
+
+	query := `
+		SELECT strftime('%Y-%m', start_date) as month, COUNT(*) as count
+		FROM policies
+		WHERE agent_user_id = ? AND start_date >= ?
+		GROUP BY month
+		ORDER BY month ASC
+		LIMIT ?;
+	`
+	// Limit ensures we don't exceed the number of months requested,
+	// even if data spans longer (e.g., if 'months' is 6 but data exists for 12)
+	rows, err := db.Query(query, agentUserID, startDate, months)
+	if err != nil {
+		log.Printf("ERROR: Query monthly policy count failed: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []MonthlySalesData
+	for rows.Next() {
+		var data MonthlySalesData
+		if err := rows.Scan(&data.Month, &data.Count); err != nil {
+			log.Printf("ERROR: Scan monthly policy count row failed: %v", err)
+			continue
+		}
+		results = append(results, data)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	log.Printf("DATABASE: Found %d months of policy data for agent %d.\n", len(results), agentUserID)
+	return results, nil
 }
 
 func deleteTokenByUserID(userID int64, purpose string) error {
@@ -930,28 +1074,49 @@ func getClientsByAgentID(agentUserID int64, statusFilter, searchTerm string, lim
 // 	return client, nil
 // }
 
-// func updateClient(clientID int64, agentUserID int64, client Client) error {
-// 	client.LastContactedAt = sql.NullTime{Time: time.Now(), Valid: true}
-// 	stmt, err := db.Prepare(`UPDATE clients SET name = ?, email = ?, phone = ?, dob = ?, address = ?, status = ?, tags = ?, last_contacted_at = ? WHERE id = ? AND agent_user_id = ?`)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to prepare update client statement: %w", err)
-// 	}
-// 	defer stmt.Close()
-// 	res, err := stmt.Exec(client.Name, client.Email, client.Phone, client.Dob, client.Address, client.Status, client.Tags, client.LastContactedAt, clientID, agentUserID)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to execute update client: %w", err)
-// 	}
-// 	rowsAffected, err := res.RowsAffected()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to get rows affected: %w", err)
-// 	}
-// 	if rowsAffected == 0 {
-// 		return sql.ErrNoRows
-// 	}
-// 	log.Printf("DATABASE: Client %d updated successfully by agent %d\n", clientID, agentUserID)
-// 	return nil
-// }
+//	func updateClient(clientID int64, agentUserID int64, client Client) error {
+//		client.LastContactedAt = sql.NullTime{Time: time.Now(), Valid: true}
+//		stmt, err := db.Prepare(`UPDATE clients SET name = ?, email = ?, phone = ?, dob = ?, address = ?, status = ?, tags = ?, last_contacted_at = ? WHERE id = ? AND agent_user_id = ?`)
+//		if err != nil {
+//			return fmt.Errorf("failed to prepare update client statement: %w", err)
+//		}
+//		defer stmt.Close()
+//		res, err := stmt.Exec(client.Name, client.Email, client.Phone, client.Dob, client.Address, client.Status, client.Tags, client.LastContactedAt, clientID, agentUserID)
+//		if err != nil {
+//			return fmt.Errorf("failed to execute update client: %w", err)
+//		}
+//		rowsAffected, err := res.RowsAffected()
+//		if err != nil {
+//			return fmt.Errorf("failed to get rows affected: %w", err)
+//		}
+//		if rowsAffected == 0 {
+//			return sql.ErrNoRows
+//		}
+//		log.Printf("DATABASE: Client %d updated successfully by agent %d\n", clientID, agentUserID)
+//		return nil
+//	}
+func handleGetSalesPerformance(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
 
+	// Get number of months from query param, default to 6 or 12
+	monthsStr := r.URL.Query().Get("months")
+	months, err := strconv.Atoi(monthsStr)
+	if err != nil || months <= 0 {
+		months = 12 // Default to last 12 months
+	}
+
+	salesData, err := getMonthlyPolicyCount(agentUserID, months)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve sales performance data")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, salesData)
+}
 func deleteClient(clientID int64, agentUserID int64) error {
 	stmt, err := db.Prepare("DELETE FROM clients WHERE id = ? AND agent_user_id = ?")
 	if err != nil {
@@ -1107,6 +1272,248 @@ func handleGetAgentFullClientData(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("API: Successfully assembled full data for %d clients for agent %d", len(allClientData), agentUserID)
 	respondJSON(w, http.StatusOK, allClientData)
+}
+
+func getAgentInsurerPOCs(agentUserID int64) ([]AgentInsurerPOC, error) {
+	log.Printf("DATABASE: Getting insurer POCs for agent %d\n", agentUserID)
+	rows, err := db.Query(`SELECT id, agent_user_id, insurer_name, poc_email
+                       FROM agent_insurer_pocs WHERE agent_user_id = ? ORDER BY insurer_name ASC`, agentUserID)
+	if err != nil {
+		log.Printf("ERROR: Query agent POCs failed: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	pocs := []AgentInsurerPOC{}
+	for rows.Next() {
+		var poc AgentInsurerPOC
+		if err := rows.Scan(&poc.ID, &poc.AgentUserID, &poc.InsurerName, &poc.PocEmail); err != nil {
+			log.Printf("ERROR: Scan agent POC row failed: %v", err)
+			continue
+		}
+		pocs = append(pocs, poc)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return pocs, nil
+}
+
+// Replaces all existing POCs for the agent with the provided list
+func setAgentInsurerPOCs(agentUserID int64, pocs []AgentInsurerPOC) error {
+	log.Printf("DATABASE: Setting insurer POCs for agent %d (count: %d)\n", agentUserID, len(pocs))
+	// Use a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() // Rollback if anything fails
+
+	// 1. Delete existing POCs for the agent
+	_, err = tx.Exec("DELETE FROM agent_insurer_pocs WHERE agent_user_id = ?", agentUserID)
+	if err != nil {
+		return fmt.Errorf("failed to delete existing POCs: %w", err)
+	}
+
+	// 2. Insert new POCs (limit to 6 on backend as well, though frontend should enforce)
+	stmt, err := tx.Prepare("INSERT INTO agent_insurer_pocs (agent_user_id, insurer_name, poc_email) VALUES (?, ?, ?)")
+	if err != nil {
+		return fmt.Errorf("failed to prepare insert POC: %w", err)
+	}
+	defer stmt.Close()
+
+	insertCount := 0
+	for i, poc := range pocs {
+		if i >= 6 { // Enforce limit
+			log.Printf("WARN: Attempted to save more than 6 insurer POCs for agent %d. Truncating.", agentUserID)
+			break
+		}
+		if poc.InsurerName == "" || poc.PocEmail == "" { // Basic validation
+			log.Printf("WARN: Skipping POC entry with empty insurer or email for agent %d.", agentUserID)
+			continue
+		}
+		_, err = stmt.Exec(agentUserID, poc.InsurerName, poc.PocEmail)
+		if err != nil {
+			// Check for unique constraint violation
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				log.Printf("WARN: Duplicate insurer name '%s' skipped for agent %d.", poc.InsurerName, agentUserID)
+				continue // Skip duplicate instead of failing transaction
+			}
+			return fmt.Errorf("failed to insert POC for insurer '%s': %w", poc.InsurerName, err)
+		}
+		insertCount++
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("DATABASE: Successfully set %d insurer POCs for agent %d\n", insertCount, agentUserID)
+	return nil
+}
+func getAgentInsurerPOCByInsurer(agentUserID int64, insurerName string) (*AgentInsurerPOC, error) {
+	log.Printf("DATABASE: Getting POC for agent %d, insurer '%s'\n", agentUserID, insurerName)
+	row := db.QueryRow(`SELECT id, agent_user_id, insurer_name, poc_email
+                       FROM agent_insurer_pocs
+                       WHERE agent_user_id = ? AND LOWER(insurer_name) = LOWER(?)`, // Case-insensitive match
+		agentUserID, insurerName)
+	poc := &AgentInsurerPOC{}
+	err := row.Scan(&poc.ID, &poc.AgentUserID, &poc.InsurerName, &poc.PocEmail)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		log.Printf("ERROR: Failed to scan agent POC row for insurer '%s': %v\n", insurerName, err)
+		return nil, err
+	}
+	return poc, nil
+}
+
+func getUpcomingRenewals(agentUserID int64, days int) ([]RenewalPolicyView, error) {
+	log.Printf("DATABASE: Fetching renewals for agent %d (next %d days)\n", agentUserID, days)
+	now := time.Now()
+	startDate := now.Format("2006-01-02")                   // Today
+	endDate := now.AddDate(0, 0, days).Format("2006-01-02") // X days from now
+
+	query := `SELECT
+                p.id, p.client_id, p.agent_user_id, p.product_id, p.policy_number, p.insurer,
+                p.premium, p.sum_insured, p.start_date, p.end_date, p.status, p.policy_doc_url,
+                p.upfront_commission_amount, p.created_at, p.updated_at,
+                c.name as client_name
+              FROM policies p
+              JOIN clients c ON p.client_id = c.id
+              WHERE p.agent_user_id = ? AND p.status = 'Active' AND p.end_date >= ? AND p.end_date < ?
+              ORDER BY p.end_date ASC`
+
+	rows, err := db.Query(query, agentUserID, startDate, endDate)
+	if err != nil {
+		log.Printf("ERROR: Query upcoming renewals failed: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var renewals []RenewalPolicyView
+	for rows.Next() {
+		var r RenewalPolicyView
+		if err := rows.Scan(
+			&r.ID, &r.ClientID, &r.AgentUserID, &r.ProductID, &r.PolicyNumber, &r.Insurer,
+			&r.Premium, &r.SumInsured, &r.StartDate, &r.EndDate, &r.Status, &r.PolicyDocURL,
+			&r.UpfrontCommissionAmount, &r.CreatedAt, &r.UpdatedAt, &r.ClientName,
+		); err != nil {
+			log.Printf("ERROR: Scan renewal row failed: %v", err)
+			continue
+		}
+		renewals = append(renewals, r)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return renewals, nil
+}
+
+// NEW: DB Function for All Agent Tasks (with filters/pagination)
+func getAllAgentTasks(agentUserID int64, statusFilter string, page, pageSize int) ([]Task, int, error) {
+	log.Printf("DATABASE: Fetching all tasks for agent %d (Status: %s, Page: %d, Size: %d)\n", agentUserID, statusFilter, page, pageSize)
+	offset := (page - 1) * pageSize
+
+	// Base query
+	baseQuery := "FROM tasks WHERE agent_user_id = ?"
+	countQuery := "SELECT COUNT(*) " + baseQuery
+	dataQuery := `SELECT id, client_id, agent_user_id, description, due_date, is_urgent, is_completed, created_at, completed_at ` + baseQuery
+
+	args := []interface{}{agentUserID}
+
+	// Apply status filter
+	if statusFilter == "pending" {
+		dataQuery += " AND is_completed = 0"
+		countQuery += " AND is_completed = 0"
+	} else if statusFilter == "completed" {
+		dataQuery += " AND is_completed = 1"
+		countQuery += " AND is_completed = 1"
+	}
+	// Add other filters like date range if needed
+
+	// Get total count for pagination
+	var totalItems int
+	err := db.QueryRow(countQuery, args...).Scan(&totalItems)
+	if err != nil {
+		log.Printf("ERROR: Count all tasks failed: %v", err)
+		return nil, 0, err
+	}
+
+	// Add ordering and pagination to data query
+	dataQuery += " ORDER BY is_completed ASC, is_urgent DESC, due_date ASC NULLS LAST, created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, pageSize, offset)
+
+	// Fetch data
+	rows, err := db.Query(dataQuery, args...)
+	if err != nil {
+		log.Printf("ERROR: Query all tasks failed: %v", err)
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(&t.ID, &t.ClientID, &t.AgentUserID, &t.Description, &t.DueDate, &t.IsUrgent, &t.IsCompleted, &t.CreatedAt, &t.CompletedAt); err != nil {
+			log.Printf("ERROR: Scan all tasks row failed: %v", err)
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return tasks, totalItems, nil
+}
+
+// NEW: DB Function for Full Activity Log (with pagination)
+func getFullActivityLog(agentUserID int64, page, pageSize int) ([]ActivityLog, int, error) {
+	log.Printf("DATABASE: Fetching full activity log for agent %d (Page: %d, Size: %d)\n", agentUserID, page, pageSize)
+	offset := (page - 1) * pageSize
+
+	countQuery := "SELECT COUNT(*) FROM activity_log WHERE agent_user_id = ?"
+	dataQuery := `SELECT id, agent_user_id, timestamp, activity_type, description, related_id
+                  FROM activity_log WHERE agent_user_id = ?
+                  ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+	args := []interface{}{agentUserID}
+
+	// Get total count
+	var totalItems int
+	err := db.QueryRow(countQuery, args...).Scan(&totalItems)
+	if err != nil {
+		log.Printf("ERROR: Count activity log failed: %v", err)
+		return nil, 0, err
+	}
+
+	// Fetch data
+	pagedArgs := append(args, pageSize, offset)
+	rows, err := db.Query(dataQuery, pagedArgs...)
+	if err != nil {
+		log.Printf("ERROR: Query full activity log failed: %v", err)
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var activities []ActivityLog
+	for rows.Next() {
+		var a ActivityLog
+		var related sql.NullString
+		if err := rows.Scan(&a.ID, &a.AgentUserID, &a.Timestamp, &a.ActivityType, &a.Description, &related); err != nil {
+			log.Printf("ERROR: Scan full activity log row failed: %v", err)
+			continue
+		}
+		if related.Valid {
+			a.RelatedID = related.String
+		}
+		activities = append(activities, a)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return activities, totalItems, nil
 }
 
 func createProduct(product Product) error {
@@ -2349,43 +2756,45 @@ func handleCreateClientTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newTask.ID = taskID
+
 	respondJSON(w, http.StatusCreated, newTask)
 }
-func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
-	userID, ok := getUserIDFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusInternalServerError, "Auth error")
-		return
-	}
 
-	// Fetch basic user info (we need email, createdAt, userType etc.)
-	// We need a getUserByID function or fetch by email if email is stored in context/userInfo
-	// Let's assume we have a way to get the basic User struct
-	// For now, we'll just fetch the extended profile and manually add basic info
-	// TODO: Implement getUserByID(id int64) (*User, error)
-	// user, err := getUserByID(userID)
-	// if err != nil { respondError(w, http.StatusInternalServerError, "Failed to fetch user details"); return }
+// func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
+// 	userID, ok := getUserIDFromContext(r.Context())
+// 	if !ok {
+// 		respondError(w, http.StatusInternalServerError, "Auth error")
+// 		return
+// 	}
 
-	profile, err := getAgentProfile(userID)
+// 	// Fetch basic user info (we need email, createdAt, userType etc.)
+// 	// We need a getUserByID function or fetch by email if email is stored in context/userInfo
+// 	// Let's assume we have a way to get the basic User struct
+// 	// For now, we'll just fetch the extended profile and manually add basic info
+// 	// TODO: Implement getUserByID(id int64) (*User, error)
+// 	// user, err := getUserByID(userID)
+// 	// if err != nil { respondError(w, http.StatusInternalServerError, "Failed to fetch user details"); return }
 
-	if err != nil && err != sql.ErrNoRows {
-		respondError(w, http.StatusInternalServerError, "Failed to fetch agent profile details")
-		return
-	}
-	if err == sql.ErrNoRows {
-		// If no profile exists yet, create a default one to return
-		profile = &AgentProfile{UserID: userID}
-	}
+// 	profile, err := getAgentProfile(userID)
 
-	// Combine basic user info (placeholder for now) with extended profile
-	fullProfile := FullAgentProfile{
-		// User: *user, // Use fetched user data here
-		User:         User{ID: userID, Email: "agent@example.com", UserType: "agent", CreatedAt: time.Now()}, // Placeholder user data
-		AgentProfile: *profile,
-	}
+// 	if err != nil && err != sql.ErrNoRows {
+// 		respondError(w, http.StatusInternalServerError, "Failed to fetch agent profile details")
+// 		return
+// 	}
+// 	if err == sql.ErrNoRows {
+// 		// If no profile exists yet, create a default one to return
+// 		profile = &AgentProfile{UserID: userID}
+// 	}
 
-	respondJSON(w, http.StatusOK, fullProfile)
-}
+// 	// Combine basic user info (placeholder for now) with extended profile
+// 	fullProfile := FullAgentProfile{
+// 		// User: *user, // Use fetched user data here
+// 		User:         User{ID: userID, Email: "agent@example.com", UserType: "agent", CreatedAt: time.Now()}, // Placeholder user data
+// 		AgentProfile: *profile,
+// 	}
+
+// 	respondJSON(w, http.StatusOK, fullProfile)
+// }
 
 // PUT /api/agents/profile
 func handleUpdateAgentProfile(w http.ResponseWriter, r *http.Request) {
@@ -2969,6 +3378,46 @@ func handleGetClients(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, clients)
 }
+func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	// Fetch basic user info (requires getUserByID or similar)
+	// Placeholder: Assume we get basic user info
+	// TODO: Implement getUserByID
+	// user, err := getUserByID(userID)
+	// if err != nil { respondError(w, http.StatusInternalServerError, "Failed to fetch user details"); return }
+	user := User{ID: userID, Email: "agent@example.com", UserType: "agent", CreatedAt: time.Now()} // Placeholder
+
+	// Fetch extended profile
+	profile, err := getAgentProfile(userID)
+	if err != nil && err != sql.ErrNoRows {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch agent profile details")
+		return
+	}
+	if err == sql.ErrNoRows {
+		profile = &AgentProfile{UserID: userID}
+	} // Default empty profile if none exists
+
+	// Fetch Insurer POCs
+	pocs, err := getAgentInsurerPOCs(userID)
+	if err != nil {
+		log.Printf("WARN: Failed to fetch insurer POCs for agent %d: %v", userID, err)
+		pocs = []AgentInsurerPOC{}
+	} // Don't fail request if POCs error
+
+	// Combine into the new response struct
+	fullProfile := FullAgentProfileWithPOCs{
+		User:         user, // Use fetched user data here eventually
+		AgentProfile: *profile,
+		InsurerPOCs:  pocs,
+	}
+
+	respondJSON(w, http.StatusOK, fullProfile)
+}
 
 func getDashboardMetrics(agentUserID int64) (*DashboardMetrics, error) {
 	metrics := &DashboardMetrics{}
@@ -3214,7 +3663,7 @@ func handleGeneratePortalLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Generated portal link for client %d by agent %d", clientID, agentUserID)
+	log.Printf("Generated portal link for client %s by agent %d", fullURL, agentUserID)
 	respondJSON(w, http.StatusOK, map[string]string{"portalLink": fullURL})
 }
 
@@ -3691,6 +4140,286 @@ func handleSuggestAgentTasks(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleGetRenewals(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	daysStr := r.URL.Query().Get("days")
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days <= 0 {
+		days = 30 // Default to 30 days
+	}
+
+	renewals, err := getUpcomingRenewals(agentUserID, days)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve upcoming renewals")
+		return
+	}
+	respondJSON(w, http.StatusOK, renewals)
+}
+
+// GET /api/tasks
+func handleGetAllTasks(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	// Filters & Pagination
+	statusFilter := r.URL.Query().Get("status") // "all", "pending", "completed"
+	pageStr := r.URL.Query().Get("page")
+	page, _ := strconv.Atoi(pageStr)
+	if page <= 0 {
+		page = 1
+	}
+	pageSizeStr := r.URL.Query().Get("limit")
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	tasks, totalItems, err := getAllAgentTasks(agentUserID, statusFilter, page, pageSize)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve tasks")
+		return
+	}
+
+	totalPages := int(math.Ceil(float64(totalItems) / float64(pageSize)))
+	response := PaginatedResponse{
+		Items: tasks, TotalItems: totalItems, CurrentPage: page, PageSize: pageSize, TotalPages: totalPages,
+	}
+	respondJSON(w, http.StatusOK, response)
+}
+
+// GET /api/activity
+func handleGetFullActivityLog(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	// Pagination
+	pageStr := r.URL.Query().Get("page")
+	page, _ := strconv.Atoi(pageStr)
+	if page <= 0 {
+		page = 1
+	}
+	pageSizeStr := r.URL.Query().Get("limit")
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+
+	activities, totalItems, err := getFullActivityLog(agentUserID, page, pageSize)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve activity log")
+		return
+	}
+
+	totalPages := int(math.Ceil(float64(totalItems) / float64(pageSize)))
+	response := PaginatedResponse{
+		Items: activities, TotalItems: totalItems, CurrentPage: page, PageSize: pageSize, TotalPages: totalPages,
+	}
+	respondJSON(w, http.StatusOK, response)
+}
+
+func handleUpdateAgentInsurerPOCs(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	var payload UpdateInsurerPOCsPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	// Basic validation (e.g., limit size, check email formats)
+	if len(payload.POCs) > 6 {
+		respondError(w, http.StatusBadRequest, "Cannot save more than 6 insurer contacts.")
+		return
+	}
+	// TODO: Add email format validation for each poc.PocEmail
+
+	err := setAgentInsurerPOCs(userID, payload.POCs)
+	if err != nil {
+		log.Printf("ERROR: Failed to update insurer POCs for agent %d: %v", userID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to update insurer contacts")
+		return
+	}
+
+	logActivity(userID, "insurer_pocs_updated", "Agent insurer contacts updated", "")
+	respondJSON(w, http.StatusOK, map[string]string{"message": "Insurer contacts updated successfully"})
+}
+
+func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	var payload SendProposalPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if payload.ClientID <= 0 || payload.ProductID == "" {
+		respondError(w, http.StatusBadRequest, "Client ID and Product ID are required")
+		return
+	}
+
+	// 1. Fetch Client Details (and verify ownership)
+	client, err := getClientByID(payload.ClientID, agentUserID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusNotFound, "Client not found or not owned by agent")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve client details")
+		return
+	}
+
+	// 2. Fetch Product Details
+	product, err := getProductByID(payload.ProductID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusNotFound, "Product not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve product details")
+		return
+	}
+
+	// 3. Fetch Agent's POC Email for the Insurer
+	poc, err := getAgentInsurerPOCByInsurer(agentUserID, product.Insurer)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("No Point of Contact email saved in your profile for insurer '%s'. Please update your profile.", product.Insurer))
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve insurer contact details")
+		return
+	}
+	if poc.PocEmail == "" { // Should be caught by UNIQUE constraint + DB func check ideally
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Stored POC email for '%s' is empty.", product.Insurer))
+		return
+	}
+
+	// 4. Construct Email
+	// TODO: Enhance email body with more details, maybe HTML format
+	subject := fmt.Sprintf("Insurance Proposal Request for Client: %s", client.Name)
+	body := fmt.Sprintf("Proposal Request from Agent ID: %d\n\n", agentUserID)
+	body += fmt.Sprintf("Client Details:\nName: %s\n", client.Name)
+	if client.Email.Valid {
+		body += fmt.Sprintf("Email: %s\n", client.Email.String)
+	}
+	if client.Phone.Valid {
+		body += fmt.Sprintf("Phone: %s\n", client.Phone.String)
+	}
+	body += fmt.Sprintf("\nRequested Product:\nID: %s\nName: %s\nCategory: %s\nInsurer: %s\n",
+		product.ID, product.Name, product.Category, product.Insurer)
+	if product.PremiumIndication.Valid {
+		body += fmt.Sprintf("Premium Indication: %s\n", product.PremiumIndication.String)
+	}
+	// Add more details as needed
+
+	// 5. Send Email (Using Mock for now)
+	err = sendEmail(poc.PocEmail, subject, body)
+	if err != nil {
+		log.Printf("ERROR: Failed to send proposal email to %s for agent %d: %v", poc.PocEmail, agentUserID, err)
+		// Don't necessarily expose email failure details to frontend
+		respondError(w, http.StatusServiceUnavailable, "Failed to send proposal email. Please try again later.")
+		return
+	}
+
+	// 6. Log Activity
+	logActivity(agentUserID, "proposal_sent", fmt.Sprintf("Proposal sent for client '%s' (Product: %s) to %s", client.Name, product.Name, product.Insurer), fmt.Sprintf("%d", client.ID))
+
+	// 7. Respond Success
+	respondJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Proposal request for '%s' sent successfully to %s.", client.Name, product.Insurer)})
+}
+
+func handleGetClientSegment(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+	segmentIDStr := chi.URLParam(r, "segmentId")
+	segmentID, err := strconv.ParseInt(segmentIDStr, 10, 64)
+	if err != nil || segmentID <= 0 {
+		respondError(w, http.StatusBadRequest, "Invalid segment ID")
+		return
+	}
+
+	segment, err := getClientSegmentByID(segmentID, agentUserID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusNotFound, "Segment not found or not owned by agent")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve segment")
+		return
+	}
+	respondJSON(w, http.StatusOK, segment)
+}
+
+// PUT /api/marketing/segments/{segmentId}
+func handleUpdateClientSegment(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+	segmentIDStr := chi.URLParam(r, "segmentId")
+	segmentID, err := strconv.ParseInt(segmentIDStr, 10, 64)
+	if err != nil || segmentID <= 0 {
+		respondError(w, http.StatusBadRequest, "Invalid segment ID")
+		return
+	}
+
+	var payload UpdateSegmentPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if payload.Name == "" {
+		respondError(w, http.StatusBadRequest, "Segment name is required")
+		return
+	}
+
+	// Construct segment object for update function
+	segment := ClientSegment{
+		ID:          segmentID,
+		AgentUserID: agentUserID, // Ensure update is scoped to the agent
+		Name:        payload.Name,
+		Criteria:    sql.NullString{String: payload.Criteria, Valid: payload.Criteria != ""},
+		// ClientCount is not updated here
+	}
+
+	err = updateClientSegment(segment)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusNotFound, "Segment not found or not owned by agent")
+			return
+		}
+		log.Printf("ERROR: Failed to update segment %d for agent %d: %v", segmentID, agentUserID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to update segment")
+		return
+	}
+
+	logActivity(agentUserID, "segment_updated", fmt.Sprintf("Updated segment '%s'", segment.Name), fmt.Sprintf("%d", segmentID))
+	respondJSON(w, http.StatusOK, map[string]string{"message": "Segment updated successfully"})
+}
+
 // --- Middleware ---
 func setupCORS(allowedOrigin string) func(next http.Handler) http.Handler {
 	return cors.Handler(cors.Options{AllowedOrigins: []string{allowedOrigin}, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, ExposedHeaders: []string{"Link"}, AllowCredentials: true, MaxAge: 300})
@@ -3818,6 +4547,8 @@ func main() {
 			r.Put("/goals", handleUpdateAgentGoal)
 			r.Get("/my-clients-full-data", handleGetAgentFullClientData)
 			r.Post("/suggest-tasks", handleSuggestAgentTasks)
+			r.Get("/sales-performance", handleGetSalesPerformance)
+			r.Put("/insurer-pocs", handleUpdateAgentInsurerPOCs)
 
 		})
 
@@ -3852,6 +4583,11 @@ func main() {
 			r.Get("/content", handleGetMarketingContent)
 			r.Get("/segments", handleGetClientSegments)
 			r.Post("/segments", handleCreateClientSegment)
+			//    r.Route("/segments", func(r chi.Router) {
+			//  r.Get("/", handleGetClientSegments)      // GET /api/marketing/segments
+			//  r.Post("/", handleCreateClientSegment)    // POST /api/marketing/segments
+			//  r.Get("/{segmentId}", handleGetClientSegment) // NEW: GET /api/marketing/segments/{id}
+			//  r.Put("/{segmentId}", handleUpdateClientSegment) // N
 		})
 
 		// --- NEW: Dashboard Routes ---
@@ -3859,9 +4595,21 @@ func main() {
 			r.Get("/metrics", handleGetDashboardMetrics)
 			r.Get("/tasks", handleGetDashboardTasks)
 			r.Get("/activity", handleGetDashboardActivity)
-		})
-		r.Get("/api/commissions", handleGetCommissions)
 
+		})
+		r.Get("/api/tasks", handleGetAllTasks)        // Get all tasks for agent (paginated)
+		r.Route("/api/policies", func(r chi.Router) { // Group policy related routes
+			r.Get("/renewals", handleGetRenewals) // Get upcoming renewals
+			// Add other policy-level routes here if needed
+		})
+
+		r.Get("/api/commissions", handleGetCommissions)
+		r.Get("/api/tasks", handleGetAllTasks) // Get all tasks for agent (paginated)
+		r.Get("/api/activity", handleGetFullActivityLog)
+
+		r.Route("/api/proposals", func(r chi.Router) {
+			r.Post("/send", handleSendProposalEmail)
+		})
 	})
 
 	// Start Server
