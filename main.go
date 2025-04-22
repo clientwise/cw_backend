@@ -4332,7 +4332,7 @@ func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
 	// Add more details as needed
 
 	// 5. Send Email (Using Mock for now)
-	err = sendEmail(poc.PocEmail, subject, body)
+	err = sendEmail([]string{poc.PocEmail}, subject, body)
 	if err != nil {
 		log.Printf("ERROR: Failed to send proposal email to %s for agent %d: %v", poc.PocEmail, agentUserID, err)
 		// Don't necessarily expose email failure details to frontend
