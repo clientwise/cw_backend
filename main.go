@@ -5000,7 +5000,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "http://localhost:3000"
+		frontendURLEnv = "https://api.goclientwise.com"
 	} // Default frontend URL
 
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
@@ -5012,7 +5012,7 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "http://localhost:8080/verify?token=", ResetURL: "http://localhost:8080/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
