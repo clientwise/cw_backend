@@ -5,6 +5,7 @@ import (
 	"context" // Import context package
 	"crypto/rand"
 	"database/sql"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors" // Import the errors package
@@ -240,6 +241,13 @@ type Product struct {
 	TrailCommissionPercentage   sql.NullFloat64 `json:"trailCommissionPercentage"`
 	CreatedAt                   time.Time       `json:"createdAt"`
 	UpdatedAt                   sql.NullTime    `json:"updatedAt"`
+}
+
+// NEW: Struct for bulk upload result summary
+type BulkUploadResult struct {
+	SuccessCount int      `json:"successCount"`
+	FailureCount int      `json:"failureCount"`
+	Errors       []string `json:"errors"` // List of errors like "Row 5: Duplicate email"
 }
 type Policy struct {
 	ID                      string          `json:"id"`
@@ -744,6 +752,23 @@ func getUserByEmail(email string) (*User, error) {
 		return nil, err
 	}
 	return user, nil
+}
+
+func parseFloatOrNull(s string) sql.NullFloat64 {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || s == "" {
+		return sql.NullFloat64{Valid: false}
+	}
+	return sql.NullFloat64{Float64: f, Valid: true}
+}
+
+// Helper function to safely parse optional int from string
+func parseIntOrNull(s string) sql.NullInt64 {
+	i, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || s == "" {
+		return sql.NullInt64{Valid: false}
+	}
+	return sql.NullInt64{Int64: i, Valid: true}
 }
 
 func storeToken(userID int64, token string, purpose string, duration time.Duration) error {
@@ -4444,6 +4469,220 @@ func handleUpdateClientSegment(w http.ResponseWriter, r *http.Request) {
 	logActivity(agentUserID, "segment_updated", fmt.Sprintf("Updated segment '%s'", segment.Name), fmt.Sprintf("%d", segmentID))
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Segment updated successfully"})
 }
+func handleBulkClientUpload(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	// 1. Parse Multipart Form
+	// Max upload size (e.g., 5MB) - adjust as needed
+	err := r.ParseMultipartForm(5 << 20)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Error parsing form data: "+err.Error())
+		return
+	}
+
+	// 2. Get File
+	file, handler, err := r.FormFile("clientFile") // "clientFile" must match the name attribute in the frontend form input
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Error retrieving the file ('clientFile' field missing or invalid): "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	// 3. Validate File Type (Basic check for CSV)
+	if !strings.HasSuffix(strings.ToLower(handler.Filename), ".csv") {
+		respondError(w, http.StatusBadRequest, "Invalid file type. Please upload a CSV file.")
+		return
+	}
+	log.Printf("BULK UPLOAD (Agent %d): Received file: %s, Size: %d", agentUserID, handler.Filename, handler.Size)
+
+	// 4. Read CSV Data
+	reader := csv.NewReader(file)
+	// Optional: Set options like comma delimiter, lazy quotes etc. if needed
+	// reader.Comma = ','
+	// reader.LazyQuotes = true
+
+	// Read header row (assuming first row is header)
+	header, err := reader.Read()
+	if err == io.EOF {
+		respondError(w, http.StatusBadRequest, "CSV file is empty.")
+		return
+	}
+	if err != nil {
+		log.Printf("ERROR reading CSV header: %v", err)
+		respondError(w, http.StatusBadRequest, "Error reading CSV header.")
+		return
+	}
+
+	// Define expected header columns (case-insensitive check is good)
+	// IMPORTANT: The order here dictates how we map columns later
+	expectedHeaders := map[string]int{
+		"name": -1, "email": -1, "phone": -1, "dob": -1, "address": -1, "status": -1, "tags": -1,
+		"income": -1, "maritalstatus": -1, "city": -1, "jobprofile": -1, "dependents": -1,
+		"liability": -1, "housingtype": -1, "vehiclecount": -1, "vehicletype": -1, "vehiclecost": -1,
+	}
+	headerMap := make(map[int]string) // Map column index to normalized header name
+	for i, h := range header {
+		normalizedHeader := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(h), " ", ""))
+		if _, exists := expectedHeaders[normalizedHeader]; exists {
+			expectedHeaders[normalizedHeader] = i // Store column index
+			headerMap[i] = normalizedHeader
+		}
+	}
+
+	// Check if essential headers are present
+	if expectedHeaders["name"] == -1 || (expectedHeaders["email"] == -1 && expectedHeaders["phone"] == -1) {
+		respondError(w, http.StatusBadRequest, "CSV must contain 'Name' column and at least one of 'Email' or 'Phone' columns.")
+		return
+	}
+
+	// 5. Process Rows within a Transaction
+	result := BulkUploadResult{SuccessCount: 0, FailureCount: 0, Errors: []string{}}
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("ERROR starting transaction: %v", err)
+		respondError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+	defer tx.Rollback() // Rollback by default, commit only on success
+
+	// Prepare statement for insertion (more efficient than preparing in loop)
+	// Note: Column order MUST match the order of fields passed to Exec later
+	insertSQL := `INSERT INTO clients (
+		agent_user_id, name, email, phone, dob, address, status, tags,
+		income, marital_status, city, job_profile, dependents, liability, housing_type,
+		vehicle_count, vehicle_type, vehicle_cost, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	stmt, err := tx.Prepare(insertSQL)
+	if err != nil {
+		log.Printf("ERROR preparing bulk insert statement: %v", err)
+		respondError(w, http.StatusInternalServerError, "Database error preparing insert")
+		return
+	}
+	defer stmt.Close()
+
+	rowIndex := 1 // Start from 1 (after header)
+	for {
+		rowIndex++
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		} // End of file
+		if err != nil {
+			errorMsg := fmt.Sprintf("Row %d: Error reading row - %v", rowIndex, err)
+			log.Println(errorMsg)
+			result.Errors = append(result.Errors, errorMsg)
+			result.FailureCount++
+			continue // Skip to next row
+		}
+
+		// Map record fields based on headerMap
+		client := Client{AgentUserID: agentUserID, Status: "Lead", CreatedAt: time.Now()} // Default status
+		for i, value := range record {
+			headerName, found := headerMap[i]
+			if !found {
+				continue
+			} // Skip columns not in our expected map
+
+			// Assign value based on header name
+			switch headerName {
+			case "name":
+				client.Name = strings.TrimSpace(value)
+			case "email":
+				client.Email = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "phone":
+				client.Phone = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "dob":
+				client.Dob = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "address":
+				client.Address = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "status":
+				if s := strings.TrimSpace(value); s != "" {
+					client.Status = s
+				} // Use default 'Lead' if empty
+			case "tags":
+				client.Tags = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "income":
+				client.Income = parseFloatOrNull(value)
+			case "maritalstatus":
+				client.MaritalStatus = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "city":
+				client.City = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "jobprofile":
+				client.JobProfile = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "dependents":
+				client.Dependents = parseIntOrNull(value)
+			case "liability":
+				client.Liability = parseFloatOrNull(value)
+			case "housingtype":
+				client.HousingType = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "vehiclecount":
+				client.VehicleCount = parseIntOrNull(value)
+			case "vehicletype":
+				client.VehicleType = sql.NullString{String: strings.TrimSpace(value), Valid: strings.TrimSpace(value) != ""}
+			case "vehiclecost":
+				client.VehicleCost = parseFloatOrNull(value)
+			}
+		}
+
+		// Validate essential data for this row
+		if client.Name == "" {
+			errorMsg := fmt.Sprintf("Row %d: Missing required field 'Name'.", rowIndex)
+			result.Errors = append(result.Errors, errorMsg)
+			result.FailureCount++
+			continue
+		}
+		if !client.Email.Valid && !client.Phone.Valid {
+			errorMsg := fmt.Sprintf("Row %d: Missing required field (Email or Phone).", rowIndex)
+			result.Errors = append(result.Errors, errorMsg)
+			result.FailureCount++
+			continue
+		}
+
+		// Execute prepared statement
+		_, err = stmt.Exec(
+			client.AgentUserID, client.Name, client.Email, client.Phone, client.Dob, client.Address,
+			client.Status, client.Tags, client.Income, client.MaritalStatus, client.City,
+			client.JobProfile, client.Dependents, client.Liability, client.HousingType,
+			client.VehicleCount, client.VehicleType, client.VehicleCost, client.CreatedAt,
+		)
+		if err != nil {
+			errorMsg := fmt.Sprintf("Row %d (Client: %s): Database error - %v", rowIndex, client.Name, err)
+			// Check for unique constraint violation specifically
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				errorMsg = fmt.Sprintf("Row %d (Client: %s): Duplicate email or phone for this agent.", rowIndex, client.Name)
+			}
+			log.Println(errorMsg)
+			result.Errors = append(result.Errors, errorMsg)
+			result.FailureCount++
+			// Decide whether to continue or rollback entire batch on DB error
+			// For now, let's continue processing other rows but the transaction will be rolled back later if any DB error occurred.
+			// If we wanted partial success, we wouldn't use a transaction or would handle errors differently.
+			// Let's actually rollback immediately on DB error for atomicity.
+			log.Printf("Rolling back transaction due to error on row %d", rowIndex)
+			tx.Rollback() // Explicit rollback
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("Database error processing row %d. No clients were imported.", rowIndex))
+			return
+		} else {
+			result.SuccessCount++
+		}
+	} // End row processing loop
+
+	// 6. Commit Transaction if no DB errors occurred during inserts
+	if err = tx.Commit(); err != nil {
+		log.Printf("ERROR committing transaction: %v", err)
+		// This case might happen if there was a deferred error, though we tried to handle insert errors above.
+		respondError(w, http.StatusInternalServerError, "Database error finalizing import.")
+		return
+	}
+
+	// 7. Return Summary
+	log.Printf("BULK UPLOAD (Agent %d): Finished. Success: %d, Failed: %d", agentUserID, result.SuccessCount, result.FailureCount)
+	respondJSON(w, http.StatusOK, result)
+}
 
 // --- Middleware ---
 func setupCORS(allowedOrigin string) func(next http.Handler) http.Handler {
@@ -4580,7 +4819,10 @@ func main() {
 		// Client routes
 		r.Get("/api/clients", handleGetClients)
 		r.Post("/api/clients", handleCreateClient)
+		r.Post("/bulk-upload", handleBulkClientUpload) // NEW: Bulk upload
+
 		r.Route("/api/clients/{clientId}", func(r chi.Router) {
+
 			r.Get("/", handleGetClient)
 			r.Put("/", handleUpdateClient)
 
