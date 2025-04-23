@@ -4525,7 +4525,7 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "https://www.goclientwise.com", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
