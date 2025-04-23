@@ -1117,26 +1117,27 @@ func handleGetSalesPerformance(w http.ResponseWriter, r *http.Request) {
 
 	respondJSON(w, http.StatusOK, salesData)
 }
-func deleteClient(clientID int64, agentUserID int64) error {
-	stmt, err := db.Prepare("DELETE FROM clients WHERE id = ? AND agent_user_id = ?")
-	if err != nil {
-		return fmt.Errorf("failed to prepare delete client statement: %w", err)
-	}
-	defer stmt.Close()
-	res, err := stmt.Exec(clientID, agentUserID)
-	if err != nil {
-		return fmt.Errorf("failed to execute delete client: %w", err)
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-	log.Printf("DATABASE: Client %d deleted successfully by agent %d\n", clientID, agentUserID)
-	return nil
-}
+
+// func deleteClient(clientID int64, agentUserID int64) error {
+// 	stmt, err := db.Prepare("DELETE FROM clients WHERE id = ? AND agent_user_id = ?")
+// 	if err != nil {
+// 		return fmt.Errorf("failed to prepare delete client statement: %w", err)
+// 	}
+// 	defer stmt.Close()
+// 	res, err := stmt.Exec(clientID, agentUserID)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to execute delete client: %w", err)
+// 	}
+// 	rowsAffected, err := res.RowsAffected()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get rows affected: %w", err)
+// 	}
+// 	if rowsAffected == 0 {
+// 		return sql.ErrNoRows
+// 	}
+// 	log.Printf("DATABASE: Client %d deleted successfully by agent %d\n", clientID, agentUserID)
+// 	return nil
+// }
 
 func getProducts(categoryFilter, insurerFilter, searchTerm string) ([]Product, error) {
 	query := `SELECT id, name, category, insurer, description, status, features, eligibility, term, exclusions, room_rent, premium_indication, insurer_logo_url, brochure_url, wording_url, claim_form_url, upfront_commission_percentage, trail_commission_percentage, created_at, updated_at FROM products WHERE status = 'Active'`
@@ -1714,6 +1715,7 @@ func createDocument(doc Document) (int64, error) {
 
 func getMarketingCampaigns(agentUserID int64) ([]MarketingCampaign, error) {
 	rows, err := db.Query(`SELECT id, agent_user_id, name, status, target_segment_name, sent_at, stats_opens, stats_clicks, stats_leads, created_at FROM marketing_campaigns ORDER BY created_at DESC`)
+	log.Print("Errpr %s", agentUserID)
 	if err != nil {
 		log.Printf("ERROR: Query campaigns failed: %v", err)
 		return nil, err
@@ -2419,31 +2421,32 @@ func handleCreateProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusCreated, newProduct)
 }
-func handleGetClients2(w http.ResponseWriter, r *http.Request) {
-	agentUserID, ok := getUserIDFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusInternalServerError, "Could not get user ID from context")
-		return
-	}
-	statusFilter := r.URL.Query().Get("status")
-	searchTerm := r.URL.Query().Get("search")
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
-	limit, _ := strconv.Atoi(limitStr)
-	offset, _ := strconv.Atoi(offsetStr)
-	if limit <= 0 || limit > 100 {
-		limit = 25
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	clients, err := getClientsByAgentID(agentUserID, statusFilter, searchTerm, limit, offset)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to retrieve clients")
-		return
-	}
-	respondJSON(w, http.StatusOK, clients)
-}
+
+//	func handleGetClients2(w http.ResponseWriter, r *http.Request) {
+//		agentUserID, ok := getUserIDFromContext(r.Context())
+//		if !ok {
+//			respondError(w, http.StatusInternalServerError, "Could not get user ID from context")
+//			return
+//		}
+//		statusFilter := r.URL.Query().Get("status")
+//		searchTerm := r.URL.Query().Get("search")
+//		limitStr := r.URL.Query().Get("limit")
+//		offsetStr := r.URL.Query().Get("offset")
+//		limit, _ := strconv.Atoi(limitStr)
+//		offset, _ := strconv.Atoi(offsetStr)
+//		if limit <= 0 || limit > 100 {
+//			limit = 25
+//		}
+//		if offset < 0 {
+//			offset = 0
+//		}
+//		clients, err := getClientsByAgentID(agentUserID, statusFilter, searchTerm, limit, offset)
+//		if err != nil {
+//			respondError(w, http.StatusInternalServerError, "Failed to retrieve clients")
+//			return
+//		}
+//		respondJSON(w, http.StatusOK, clients)
+//	}
 func handleCreateClient(w http.ResponseWriter, r *http.Request) {
 	agentUserID, ok := getUserIDFromContext(r.Context())
 	if !ok {
@@ -2580,30 +2583,31 @@ func handleUpdateClient(w http.ResponseWriter, r *http.Request) {
 	logActivity(agentUserID, "client_updated", fmt.Sprintf("Updated client '%s'", updatedClient.Name), clientIDStr)
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Client updated successfully"})
 }
-func handleDeleteClient(w http.ResponseWriter, r *http.Request) {
-	agentUserID, ok := getUserIDFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusInternalServerError, "Could not get user ID from context")
-		return
-	}
-	clientIDStr := chi.URLParam(r, "clientId")
-	clientID, err := strconv.ParseInt(clientIDStr, 10, 64)
-	if err != nil || clientID <= 0 {
-		respondError(w, http.StatusBadRequest, "Invalid client ID in URL path")
-		return
-	}
-	err = deleteClient(clientID, agentUserID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusNotFound, "Client not found or not owned by agent")
-			return
-		}
-		log.Printf("ERROR: Failed to delete client %d for agent %d: %v", clientID, agentUserID, err)
-		respondError(w, http.StatusInternalServerError, "Failed to delete client")
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]string{"message": "Client deleted successfully"})
-}
+
+//	func handleDeleteClient(w http.ResponseWriter, r *http.Request) {
+//		agentUserID, ok := getUserIDFromContext(r.Context())
+//		if !ok {
+//			respondError(w, http.StatusInternalServerError, "Could not get user ID from context")
+//			return
+//		}
+//		clientIDStr := chi.URLParam(r, "clientId")
+//		clientID, err := strconv.ParseInt(clientIDStr, 10, 64)
+//		if err != nil || clientID <= 0 {
+//			respondError(w, http.StatusBadRequest, "Invalid client ID in URL path")
+//			return
+//		}
+//		err = deleteClient(clientID, agentUserID)
+//		if err != nil {
+//			if err == sql.ErrNoRows {
+//				respondError(w, http.StatusNotFound, "Client not found or not owned by agent")
+//				return
+//			}
+//			log.Printf("ERROR: Failed to delete client %d for agent %d: %v", clientID, agentUserID, err)
+//			respondError(w, http.StatusInternalServerError, "Failed to delete client")
+//			return
+//		}
+//		respondJSON(w, http.StatusOK, map[string]string{"message": "Client deleted successfully"})
+//	}
 func handleGetClientPolicies(w http.ResponseWriter, r *http.Request) {
 	agentUserID, ok := getUserIDFromContext(r.Context())
 	if !ok {
@@ -4509,7 +4513,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "http://localhost:3000"
+		frontendURLEnv = "https://www.goclientwise.com"
 	} // Default frontend URL
 
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
@@ -4521,7 +4525,7 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "http://localhost:8080/verify?token=", ResetURL: "http://localhost:3000/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "http://localhost:3000", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "https://www.goclientwise.com", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
@@ -4606,9 +4610,9 @@ func main() {
 			r.Post("/segments", handleCreateClientSegment)
 			//    r.Route("/segments", func(r chi.Router) {
 			//  r.Get("/", handleGetClientSegments)      // GET /api/marketing/segments
-			//  r.Post("/", handleCreateClientSegment)    // POST /api/marketing/segments
-			//  r.Get("/{segmentId}", handleGetClientSegment) // NEW: GET /api/marketing/segments/{id}
-			//  r.Put("/{segmentId}", handleUpdateClientSegment) // N
+			r.Post("/", handleCreateClientSegment)           // POST /api/marketing/segments
+			r.Get("/{segmentId}", handleGetClientSegment)    // NEW: GET /api/marketing/segments/{id}
+			r.Put("/{segmentId}", handleUpdateClientSegment) // N
 		})
 
 		// --- NEW: Dashboard Routes ---
