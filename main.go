@@ -3378,6 +3378,22 @@ func handleGetClients(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, clients)
 }
+func getUserByID(userID int64) (*User, error) {
+	log.Printf("DATABASE: Getting user by ID: %d\n", userID)
+	row := db.QueryRow("SELECT id, email, password_hash, user_type, is_verified, agency_id, created_at FROM users WHERE id = ?", userID)
+	user := &User{}
+	err := row.Scan(&user.ID, &user.Email, &user.PasswordHash, &user.UserType, &user.IsVerified, &user.CreatedAt)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("ERROR: Failed to scan user row for ID %d: %v\n", userID, err)
+		} else {
+			log.Printf("DATABASE: User not found: %d\n", userID)
+		}
+		return nil, err
+	}
+	return user, nil
+}
+
 func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
 	userID, ok := getUserIDFromContext(r.Context())
 	if !ok {
@@ -3388,9 +3404,12 @@ func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
 	// Fetch basic user info (requires getUserByID or similar)
 	// Placeholder: Assume we get basic user info
 	// TODO: Implement getUserByID
-	// user, err := getUserByID(userID)
-	// if err != nil { respondError(w, http.StatusInternalServerError, "Failed to fetch user details"); return }
-	user := User{ID: userID, Email: "agent@example.com", UserType: "agent", CreatedAt: time.Now()} // Placeholder
+	user_data, err := getUserByID(userID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch user details")
+		return
+	}
+	user := User{ID: userID, Email: user_data.Email, UserType: user_data.UserType, CreatedAt: user_data.CreatedAt} // Placeholder
 
 	// Fetch extended profile
 	profile, err := getAgentProfile(userID)
@@ -4332,7 +4351,9 @@ func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
 	// Add more details as needed
 
 	// 5. Send Email (Using Mock for now)
-	err = sendEmail(poc.PocEmail, subject, body)
+	recipients := []string{poc.PocEmail} // Create a slice containing the single email
+
+	err = sendEmail(recipients, subject, body)
 	if err != nil {
 		log.Printf("ERROR: Failed to send proposal email to %s for agent %d: %v", poc.PocEmail, agentUserID, err)
 		// Don't necessarily expose email failure details to frontend
