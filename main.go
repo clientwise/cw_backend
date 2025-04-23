@@ -450,6 +450,10 @@ type SendProposalPayload struct {
 	// Add other relevant info if needed, like custom message from agent
 }
 
+type UpdateInsurerDetailsPayload struct {
+	Details []AgentInsurerDetail `json:"details"`
+}
+
 // NEW: Struct for data returned to public portal (subset of Client + related)
 type PublicClientView struct {
 	Name      string     `json:"name"`
@@ -510,6 +514,21 @@ type UpdateAgentProfilePayload struct {
 type UpdateAgentGoalPayload struct {
 	TargetIncome *float64 `json:"targetIncome"` // Use pointer for optional update
 	TargetPeriod string   `json:"targetPeriod"`
+}
+type AgentInsurerDetail struct {
+	ID                   int64           `json:"id,omitempty"`
+	AgentUserID          int64           `json:"-"`
+	InsurerName          string          `json:"insurerName"`
+	AgentCode            sql.NullString  `json:"agentCode"`
+	SpocEmail            sql.NullString  `json:"spocEmail"`
+	CommissionPercentage sql.NullFloat64 `json:"commissionPercentage"` // General/Default rate
+}
+
+// Updated struct for GET /api/agents/profile response
+type FullAgentProfileWithDetails struct {
+	User                                // Embed basic user info
+	AgentProfile                        // Embed extended profile info
+	InsurerDetails []AgentInsurerDetail `json:"insurerDetails"` // Changed from InsurerPOCs
 }
 
 func createClient(client Client) (int64, error) {
@@ -706,6 +725,20 @@ func setupDatabase() error {
         bank_ifsc TEXT,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );`, "agent_profiles"); err != nil {
+		return err
+	}
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_insurer_details (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_user_id INTEGER NOT NULL,
+        insurer_name TEXT NOT NULL,
+        agent_code TEXT,
+        spoc_email TEXT,
+        commission_percentage REAL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(agent_user_id, insurer_name) -- Agent should have only one entry per insurer
+    );`, "agent_insurer_details"); err != nil {
 		return err
 	}
 
@@ -3409,7 +3442,7 @@ func handleGetClients(w http.ResponseWriter, r *http.Request) {
 }
 func getUserByID(userID int64) (*User, error) {
 	log.Printf("DATABASE: Getting user by ID: %d\n", userID)
-	row := db.QueryRow("SELECT id, email, password_hash, user_type, is_verified, agency_id, created_at FROM users WHERE id = ?", userID)
+	row := db.QueryRow("SELECT id, email, password_hash, user_type, is_verified, created_at FROM users WHERE id = ?", userID)
 	user := &User{}
 	err := row.Scan(&user.ID, &user.Email, &user.PasswordHash, &user.UserType, &user.IsVerified, &user.CreatedAt)
 	if err != nil {
@@ -3423,49 +3456,49 @@ func getUserByID(userID int64) (*User, error) {
 	return user, nil
 }
 
-func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
-	userID, ok := getUserIDFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusInternalServerError, "Auth error")
-		return
-	}
+// func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
+// 	userID, ok := getUserIDFromContext(r.Context())
+// 	if !ok {
+// 		respondError(w, http.StatusInternalServerError, "Auth error")
+// 		return
+// 	}
 
-	// Fetch basic user info (requires getUserByID or similar)
-	// Placeholder: Assume we get basic user info
-	// TODO: Implement getUserByID
-	user_data, err := getUserByID(userID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to fetch user details")
-		return
-	}
-	user := User{ID: userID, Email: user_data.Email, UserType: user_data.UserType, CreatedAt: user_data.CreatedAt} // Placeholder
+// 	// Fetch basic user info (requires getUserByID or similar)
+// 	// Placeholder: Assume we get basic user info
+// 	// TODO: Implement getUserByID
+// 	user_data, err := getUserByID(userID)
+// 	if err != nil {
+// 		respondError(w, http.StatusInternalServerError, "Failed to fetch user details")
+// 		return
+// 	}
+// 	user := User{ID: userID, Email: user_data.Email, UserType: user_data.UserType, CreatedAt: user_data.CreatedAt} // Placeholder
 
-	// Fetch extended profile
-	profile, err := getAgentProfile(userID)
-	if err != nil && err != sql.ErrNoRows {
-		respondError(w, http.StatusInternalServerError, "Failed to fetch agent profile details")
-		return
-	}
-	if err == sql.ErrNoRows {
-		profile = &AgentProfile{UserID: userID}
-	} // Default empty profile if none exists
+// 	// Fetch extended profile
+// 	profile, err := getAgentProfile(userID)
+// 	if err != nil && err != sql.ErrNoRows {
+// 		respondError(w, http.StatusInternalServerError, "Failed to fetch agent profile details")
+// 		return
+// 	}
+// 	if err == sql.ErrNoRows {
+// 		profile = &AgentProfile{UserID: userID}
+// 	} // Default empty profile if none exists
 
-	// Fetch Insurer POCs
-	pocs, err := getAgentInsurerPOCs(userID)
-	if err != nil {
-		log.Printf("WARN: Failed to fetch insurer POCs for agent %d: %v", userID, err)
-		pocs = []AgentInsurerPOC{}
-	} // Don't fail request if POCs error
+// 	// Fetch Insurer POCs
+// 	pocs, err := getAgentInsurerPOCs(userID)
+// 	if err != nil {
+// 		log.Printf("WARN: Failed to fetch insurer POCs for agent %d: %v", userID, err)
+// 		pocs = []AgentInsurerPOC{}
+// 	} // Don't fail request if POCs error
 
-	// Combine into the new response struct
-	fullProfile := FullAgentProfileWithPOCs{
-		User:         user, // Use fetched user data here eventually
-		AgentProfile: *profile,
-		InsurerPOCs:  pocs,
-	}
+// 	// Combine into the new response struct
+// 	fullProfile := FullAgentProfileWithPOCs{
+// 		User:         user, // Use fetched user data here eventually
+// 		AgentProfile: *profile,
+// 		InsurerPOCs:  pocs,
+// 	}
 
-	respondJSON(w, http.StatusOK, fullProfile)
-}
+// 	respondJSON(w, http.StatusOK, fullProfile)
+// }
 
 func getDashboardMetrics(agentUserID int64) (*DashboardMetrics, error) {
 	metrics := &DashboardMetrics{}
@@ -4307,95 +4340,95 @@ func handleUpdateAgentInsurerPOCs(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Insurer contacts updated successfully"})
 }
 
-func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
-	agentUserID, ok := getUserIDFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusInternalServerError, "Auth error")
-		return
-	}
+// func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
+// 	agentUserID, ok := getUserIDFromContext(r.Context())
+// 	if !ok {
+// 		respondError(w, http.StatusInternalServerError, "Auth error")
+// 		return
+// 	}
 
-	var payload SendProposalPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request payload")
-		return
-	}
-	if payload.ClientID <= 0 || payload.ProductID == "" {
-		respondError(w, http.StatusBadRequest, "Client ID and Product ID are required")
-		return
-	}
+// 	var payload SendProposalPayload
+// 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+// 		respondError(w, http.StatusBadRequest, "Invalid request payload")
+// 		return
+// 	}
+// 	if payload.ClientID <= 0 || payload.ProductID == "" {
+// 		respondError(w, http.StatusBadRequest, "Client ID and Product ID are required")
+// 		return
+// 	}
 
-	// 1. Fetch Client Details (and verify ownership)
-	client, err := getClientByID(payload.ClientID, agentUserID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusNotFound, "Client not found or not owned by agent")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "Failed to retrieve client details")
-		return
-	}
+// 	// 1. Fetch Client Details (and verify ownership)
+// 	client, err := getClientByID(payload.ClientID, agentUserID)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			respondError(w, http.StatusNotFound, "Client not found or not owned by agent")
+// 			return
+// 		}
+// 		respondError(w, http.StatusInternalServerError, "Failed to retrieve client details")
+// 		return
+// 	}
 
-	// 2. Fetch Product Details
-	product, err := getProductByID(payload.ProductID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusNotFound, "Product not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "Failed to retrieve product details")
-		return
-	}
+// 	// 2. Fetch Product Details
+// 	product, err := getProductByID(payload.ProductID)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			respondError(w, http.StatusNotFound, "Product not found")
+// 			return
+// 		}
+// 		respondError(w, http.StatusInternalServerError, "Failed to retrieve product details")
+// 		return
+// 	}
 
-	// 3. Fetch Agent's POC Email for the Insurer
-	poc, err := getAgentInsurerPOCByInsurer(agentUserID, product.Insurer)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusBadRequest, fmt.Sprintf("No Point of Contact email saved in your profile for insurer '%s'. Please update your profile.", product.Insurer))
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "Failed to retrieve insurer contact details")
-		return
-	}
-	if poc.PocEmail == "" { // Should be caught by UNIQUE constraint + DB func check ideally
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Stored POC email for '%s' is empty.", product.Insurer))
-		return
-	}
+// 	// 3. Fetch Agent's POC Email for the Insurer
+// 	poc, err := getAgentInsurerPOCByInsurer(agentUserID, product.Insurer)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			respondError(w, http.StatusBadRequest, fmt.Sprintf("No Point of Contact email saved in your profile for insurer '%s'. Please update your profile.", product.Insurer))
+// 			return
+// 		}
+// 		respondError(w, http.StatusInternalServerError, "Failed to retrieve insurer contact details")
+// 		return
+// 	}
+// 	if poc.PocEmail == "" { // Should be caught by UNIQUE constraint + DB func check ideally
+// 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Stored POC email for '%s' is empty.", product.Insurer))
+// 		return
+// 	}
 
-	// 4. Construct Email
-	// TODO: Enhance email body with more details, maybe HTML format
-	subject := fmt.Sprintf("Insurance Proposal Request for Client: %s", client.Name)
-	body := fmt.Sprintf("Proposal Request from Agent ID: %d\n\n", agentUserID)
-	body += fmt.Sprintf("Client Details:\nName: %s\n", client.Name)
-	if client.Email.Valid {
-		body += fmt.Sprintf("Email: %s\n", client.Email.String)
-	}
-	if client.Phone.Valid {
-		body += fmt.Sprintf("Phone: %s\n", client.Phone.String)
-	}
-	body += fmt.Sprintf("\nRequested Product:\nID: %s\nName: %s\nCategory: %s\nInsurer: %s\n",
-		product.ID, product.Name, product.Category, product.Insurer)
-	if product.PremiumIndication.Valid {
-		body += fmt.Sprintf("Premium Indication: %s\n", product.PremiumIndication.String)
-	}
-	// Add more details as needed
+// 	// 4. Construct Email
+// 	// TODO: Enhance email body with more details, maybe HTML format
+// 	subject := fmt.Sprintf("Insurance Proposal Request for Client: %s", client.Name)
+// 	body := fmt.Sprintf("Proposal Request from Agent ID: %d\n\n", agentUserID)
+// 	body += fmt.Sprintf("Client Details:\nName: %s\n", client.Name)
+// 	if client.Email.Valid {
+// 		body += fmt.Sprintf("Email: %s\n", client.Email.String)
+// 	}
+// 	if client.Phone.Valid {
+// 		body += fmt.Sprintf("Phone: %s\n", client.Phone.String)
+// 	}
+// 	body += fmt.Sprintf("\nRequested Product:\nID: %s\nName: %s\nCategory: %s\nInsurer: %s\n",
+// 		product.ID, product.Name, product.Category, product.Insurer)
+// 	if product.PremiumIndication.Valid {
+// 		body += fmt.Sprintf("Premium Indication: %s\n", product.PremiumIndication.String)
+// 	}
+// 	// Add more details as needed
 
-	// 5. Send Email (Using Mock for now)
-	recipients := []string{poc.PocEmail} // Create a slice containing the single email
+// 	// 5. Send Email (Using Mock for now)
+// 	recipients := []string{poc.PocEmail} // Create a slice containing the single email
 
-	err = sendEmail(recipients, subject, body)
-	if err != nil {
-		log.Printf("ERROR: Failed to send proposal email to %s for agent %d: %v", poc.PocEmail, agentUserID, err)
-		// Don't necessarily expose email failure details to frontend
-		respondError(w, http.StatusServiceUnavailable, "Failed to send proposal email. Please try again later.")
-		return
-	}
+// 	err = sendEmail(recipients, subject, body)
+// 	if err != nil {
+// 		log.Printf("ERROR: Failed to send proposal email to %s for agent %d: %v", poc.PocEmail, agentUserID, err)
+// 		// Don't necessarily expose email failure details to frontend
+// 		respondError(w, http.StatusServiceUnavailable, "Failed to send proposal email. Please try again later.")
+// 		return
+// 	}
 
-	// 6. Log Activity
-	logActivity(agentUserID, "proposal_sent", fmt.Sprintf("Proposal sent for client '%s' (Product: %s) to %s", client.Name, product.Name, product.Insurer), fmt.Sprintf("%d", client.ID))
+// 	// 6. Log Activity
+// 	logActivity(agentUserID, "proposal_sent", fmt.Sprintf("Proposal sent for client '%s' (Product: %s) to %s", client.Name, product.Name, product.Insurer), fmt.Sprintf("%d", client.ID))
 
-	// 7. Respond Success
-	respondJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Proposal request for '%s' sent successfully to %s.", client.Name, product.Insurer)})
-}
+// 	// 7. Respond Success
+// 	respondJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Proposal request for '%s' sent successfully to %s.", client.Name, product.Insurer)})
+// }
 
 func handleGetClientSegment(w http.ResponseWriter, r *http.Request) {
 	agentUserID, ok := getUserIDFromContext(r.Context())
@@ -4470,6 +4503,7 @@ func handleUpdateClientSegment(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Segment updated successfully"})
 }
 func handleBulkClientUpload(w http.ResponseWriter, r *http.Request) {
+
 	agentUserID, ok := getUserIDFromContext(r.Context())
 	if !ok {
 		respondError(w, http.StatusInternalServerError, "Auth error")
@@ -4684,6 +4718,220 @@ func handleBulkClientUpload(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, result)
 }
 
+func getAgentInsurerDetails(agentUserID int64) ([]AgentInsurerDetail, error) {
+	log.Printf("DATABASE: Getting insurer details for agent %d\n", agentUserID)
+	rows, err := db.Query(`SELECT id, agent_user_id, insurer_name, agent_code, spoc_email, commission_percentage
+                       FROM agent_insurer_details WHERE agent_user_id = ? ORDER BY insurer_name ASC`, agentUserID)
+	if err != nil {
+		log.Printf("ERROR: Query agent insurer details failed: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	details := []AgentInsurerDetail{}
+	for rows.Next() {
+		var detail AgentInsurerDetail
+		if err := rows.Scan(&detail.ID, &detail.AgentUserID, &detail.InsurerName, &detail.AgentCode, &detail.SpocEmail, &detail.CommissionPercentage); err != nil {
+			log.Printf("ERROR: Scan agent insurer detail row failed: %v", err)
+			continue
+		}
+		details = append(details, detail)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return details, nil
+}
+
+// Replaces all existing insurer details for the agent with the provided list
+func setAgentInsurerDetails(agentUserID int64, details []AgentInsurerDetail) error {
+	log.Printf("DATABASE: Setting insurer details for agent %d (count: %d)\n", agentUserID, len(details))
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Delete existing details for the agent
+	_, err = tx.Exec("DELETE FROM agent_insurer_details WHERE agent_user_id = ?", agentUserID)
+	if err != nil {
+		return fmt.Errorf("failed to delete existing insurer details: %w", err)
+	}
+
+	// 2. Insert new details (limit to a reasonable number, e.g., 20?)
+	stmt, err := tx.Prepare(`INSERT INTO agent_insurer_details
+        (agent_user_id, insurer_name, agent_code, spoc_email, commission_percentage)
+        VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare insert insurer detail: %w", err)
+	}
+	defer stmt.Close()
+
+	insertCount := 0
+	maxDetails := 20 // Set a practical limit
+	for i, detail := range details {
+		if i >= maxDetails {
+			log.Printf("WARN: Attempted to save more than %d insurer details for agent %d. Truncating.", maxDetails, agentUserID)
+			break
+		}
+		// Basic validation
+		if detail.InsurerName == "" {
+			continue
+		} // Insurer name is mandatory
+
+		_, err = stmt.Exec(agentUserID, detail.InsurerName, detail.AgentCode, detail.SpocEmail, detail.CommissionPercentage)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				log.Printf("WARN: Duplicate insurer name '%s' skipped for agent %d.", detail.InsurerName, agentUserID)
+				continue // Skip duplicate
+			}
+			return fmt.Errorf("failed to insert insurer detail for '%s': %w", detail.InsurerName, err)
+		}
+		insertCount++
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	log.Printf("DATABASE: Successfully set %d insurer details for agent %d\n", insertCount, agentUserID)
+	return nil
+}
+
+// Gets details for a specific insurer for an agent (used for proposal email)
+func getAgentInsurerDetailByInsurer(agentUserID int64, insurerName string) (*AgentInsurerDetail, error) {
+	log.Printf("DATABASE: Getting details for agent %d, insurer '%s'\n", agentUserID, insurerName)
+	row := db.QueryRow(`SELECT id, agent_user_id, insurer_name, agent_code, spoc_email, commission_percentage
+                       FROM agent_insurer_details
+                       WHERE agent_user_id = ? AND LOWER(insurer_name) = LOWER(?)`,
+		agentUserID, insurerName) // Case-insensitive match
+	detail := &AgentInsurerDetail{}
+	err := row.Scan(&detail.ID, &detail.AgentUserID, &detail.InsurerName, &detail.AgentCode, &detail.SpocEmail, &detail.CommissionPercentage)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		log.Printf("ERROR: Failed to scan agent insurer detail row for insurer '%s': %v\n", insurerName, err)
+		return nil, err
+	}
+	return detail, nil
+}
+
+func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+	user, err := getUserByID(userID)
+	if err != nil { /* ... handle error ... */
+	}
+	profile, err := getAgentProfile(userID)
+	if err != nil && err != sql.ErrNoRows { /* ... handle error ... */
+	}
+	if err == sql.ErrNoRows {
+		profile = &AgentProfile{UserID: userID}
+	}
+	// Fetch Insurer Details
+	details, err := getAgentInsurerDetails(userID)
+	if err != nil {
+		log.Printf("WARN: Failed to fetch insurer details for agent %d: %v", userID, err)
+		details = []AgentInsurerDetail{}
+	}
+
+	fullProfile := FullAgentProfileWithDetails{User: *user, AgentProfile: *profile, InsurerDetails: details} // Use new struct
+	respondJSON(w, http.StatusOK, fullProfile)
+}
+
+// (Other handlers: PUT profile, GET/PUT goals, etc.)
+// ...
+
+// NEW: Handler to update Insurer Details (replaces POC handler)
+// PUT /api/agents/insurer-details
+func handleUpdateAgentInsurerDetails(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
+
+	var payload UpdateInsurerDetailsPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	// Basic validation (e.g., limit size, check email formats)
+	maxDetails := 20 // Match DB limit if any
+	if len(payload.Details) > maxDetails {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Cannot save more than %d insurer details.", maxDetails))
+		return
+	}
+	// TODO: Add email format validation for each detail.SpocEmail
+
+	err := setAgentInsurerDetails(userID, payload.Details)
+	if err != nil {
+		log.Printf("ERROR: Failed to update insurer details for agent %d: %v", userID, err)
+		respondError(w, http.StatusInternalServerError, "Failed to update insurer details")
+		return
+	}
+
+	logActivity(userID, "insurer_details_updated", "Agent insurer details updated", "")
+	respondJSON(w, http.StatusOK, map[string]string{"message": "Insurer details updated successfully"})
+}
+
+// UPDATED: Proposal Email Handler (uses new DB function)
+func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok { /* ... */
+	}
+	var payload SendProposalPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil { /* ... */
+	}
+	if payload.ClientID <= 0 || payload.ProductID == "" { /* ... */
+	}
+
+	client, err := getClientByID(payload.ClientID, agentUserID)
+	if err != nil { /* ... */
+	}
+	product, err := getProductByID(payload.ProductID)
+	if err != nil { /* ... */
+	}
+
+	// Fetch Agent's Insurer Detail for the product's insurer
+	detail, err := getAgentInsurerDetailByInsurer(agentUserID, product.Insurer)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("No contact details saved in your profile for insurer '%s'. Please update your profile.", product.Insurer))
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve insurer contact details")
+		return
+	}
+	if !detail.SpocEmail.Valid || detail.SpocEmail.String == "" {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("No SPOC Email saved in your profile for insurer '%s'. Please update your profile.", product.Insurer))
+		return
+	}
+	pocEmail := detail.SpocEmail.String
+
+	// Construct Email (using client, product, maybe agent code from detail)
+	subject := fmt.Sprintf("Insurance Proposal Request for Client: %s", client.Name)
+	body := fmt.Sprintf("Proposal Request from Agent ID: %d\n", agentUserID)
+	if detail.AgentCode.Valid && detail.AgentCode.String != "" {
+		body += fmt.Sprintf("Agent Code: %s\n", detail.AgentCode.String)
+	}
+	body += fmt.Sprintf("\nClient Details:\nName: %s\n", client.Name)
+	// ... (add more client/product details to body) ...
+
+	// Send Email (Mocked)
+	recipientList := []string{pocEmail} // Create a slice with pocEmail as the only element
+	err = sendEmail(recipientList, subject, body)
+	if err != nil { /* ... handle email error ... */
+	}
+
+	logActivity(agentUserID, "proposal_sent", fmt.Sprintf("Proposal sent for client '%s' (Product: %s) to %s", client.Name, product.Name, product.Insurer), fmt.Sprintf("%d", client.ID))
+	respondJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Proposal request for '%s' sent successfully to %s.", client.Name, product.Insurer)})
+}
+
 // --- Middleware ---
 func setupCORS(allowedOrigin string) func(next http.Handler) http.Handler {
 	return cors.Handler(cors.Options{AllowedOrigins: []string{allowedOrigin}, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, ExposedHeaders: []string{"Link"}, AllowCredentials: true, MaxAge: 300})
@@ -4752,7 +5000,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "https://www.goclientwise.com"
+		frontendURLEnv = "http://localhost:3000"
 	} // Default frontend URL
 
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
@@ -4764,7 +5012,7 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "http://localhost:8080/verify?token=", ResetURL: "http://localhost:8080/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
@@ -4840,6 +5088,13 @@ func main() {
 			r.Get("/coverage-estimation", handleGetCoverageEstimation)
 			r.Post("/generate-portal-link", handleGeneratePortalLink)
 			r.Post("/suggest-tasks", handleSuggestClientTasks)
+			r.Put("/insurer-details", handleUpdateAgentInsurerDetails)
+
+		})
+
+		// Proposal Route
+		r.Route("/api/proposals", func(r chi.Router) {
+			r.Post("/send", handleSendProposalEmail) // Uses updated logic
 		})
 
 		// Marketing Routes
