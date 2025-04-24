@@ -3705,7 +3705,6 @@ func handleGeneratePortalLink(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid client ID")
 		return
 	}
-
 	// Verify client belongs to agent
 	_, err = getClientByID(clientID, agentUserID)
 	if err != nil {
@@ -5000,7 +4999,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "https://api.goclientwise.com"
+		frontendURLEnv = "http://localhost:3000"
 	} // Default frontend URL
 
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
@@ -5033,6 +5032,10 @@ func main() {
 	r.Post("/forgot-password", handleForgotPassword)
 	r.Post("/reset-password", handleResetPassword)
 	r.Post("/api/onboard", handlePublicOnboarding)
+	r.Route("/api/portal/client/{token}", func(r chi.Router) {
+		r.Get("/", handleGetPublicClientData)
+		r.Post("/documents", handlePublicDocumentUpload)
+	})
 
 	// Protected API routes group
 	r.Group(func(r chi.Router) {
@@ -5048,10 +5051,7 @@ func main() {
 		r.Get("/api/products", handleGetProducts)
 		r.Get("/api/products/{productId}", handleGetProduct)
 		r.With(agencyOnlyMiddleware).Post("/api/products", handleCreateProduct) // Add Product (Agency Only)
-		r.Route("/api/portal/client/{token}", func(r chi.Router) {
-			r.Get("/", handleGetPublicClientData)
-			r.Post("/documents", handlePublicDocumentUpload)
-		})
+
 		r.Route("/api/agents", func(r chi.Router) {
 			r.Get("/profile", handleGetAgentProfile)
 			r.Put("/profile", handleUpdateAgentProfile)
@@ -5067,7 +5067,7 @@ func main() {
 		// Client routes
 		r.Get("/api/clients", handleGetClients)
 		r.Post("/api/clients", handleCreateClient)
-		r.Post("/bulk-upload", handleBulkClientUpload) // NEW: Bulk upload
+		r.Post("/api/clients/bulk-upload", handleBulkClientUpload) // NEW: Bulk upload
 
 		r.Route("/api/clients/{clientId}", func(r chi.Router) {
 
@@ -5129,9 +5129,6 @@ func main() {
 		r.Get("/api/tasks", handleGetAllTasks) // Get all tasks for agent (paginated)
 		r.Get("/api/activity", handleGetFullActivityLog)
 
-		r.Route("/api/proposals", func(r chi.Router) {
-			r.Post("/send", handleSendProposalEmail)
-		})
 	})
 
 	// Start Server
