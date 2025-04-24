@@ -456,12 +456,12 @@ type UpdateInsurerDetailsPayload struct {
 
 // NEW: Struct for data returned to public portal (subset of Client + related)
 type PublicClientView struct {
-	Name      string     `json:"name"`
-	Email     string     `json:"email"`    // Only show if valid
-	Phone     string     `json:"phone"`    // Only show if valid
-	Policies  []Policy   `json:"policies"` // Reuse Policy struct for simplicity
-	Documents []Document `json:"documents"`
-	// Add other fields safe for client viewing if needed
+	Client             Client             `json:"client"` // Full client details
+	Policies           []Policy           `json:"policies"`
+	Documents          []Document         `json:"documents"`
+	Communications     []Communication    `json:"communications"`
+	CoverageEstimation CoverageEstimation `json:"coverageEstimation"`
+	AiRecommendation   string             `json:"aiRecommendation"` // Text from Gemini
 }
 type UpdateInsurerPOCsPayload struct {
 	POCs []AgentInsurerPOC `json:"pocs"`
@@ -1060,6 +1060,72 @@ func getNotices(categoryFilter string) ([]Notice, error) {
 	}
 	log.Printf("DATABASE: Found %d notices.\n", len(notices))
 	return notices, nil
+}
+func fetchAiRecommendationForClient(client Client, estimation CoverageEstimation) (string, error) {
+	log.Printf("AI RECOMMENDATION: Fetching for client %d", client.ID)
+	// if config.GoogleAiApiKey == "" {
+	// 	return "", errors.New("AI service is not configured")
+	// }
+	const GOOGLE_AI_API_KEY = "AIzaSyAoIOupDd4VBbcJMob0tTlaiGOTsP3AqXg" // <<< REPLACE FOR TESTING ONLY
+	//
+	// Construct Prompt (similar to the one used in ClientProfilePage frontend, but now in backend)
+	age := calculateAge(client.Dob.String)
+	ageStr := "N/A"
+	if age > 0 {
+		ageStr = strconv.Itoa(age)
+	}
+	incomeStr := "N/A"
+	if client.Income.Valid {
+		incomeStr = fmt.Sprintf("₹%.0f/year", client.Income.Float64)
+	}
+	dependentsStr := "N/A"
+	if client.Dependents.Valid {
+		dependentsStr = strconv.FormatInt(client.Dependents.Int64, 10)
+	}
+
+	promptText := fmt.Sprintf("Analyze this insurance client profile: Age %s, City %s, Income %s, Marital Status %s, Dependents %s. Current estimated coverage needs are Health: %.1f %s, Life: %.2f %s, Motor: %.0f %s. Based ONLY on this information, provide a brief (1-2 paragraph) recommendation focusing on potential coverage gaps or areas the client might consider discussing further with their agent. Avoid specific product names. Be encouraging.",
+		ageStr, client.City.String, incomeStr, client.MaritalStatus.String, dependentsStr,
+		estimation.Health.Amount, estimation.Health.Unit,
+		estimation.Life.Amount, estimation.Life.Unit,
+		estimation.Motor.Amount, estimation.Motor.Unit,
+	)
+
+	// Call Gemini API
+	geminiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", GOOGLE_AI_API_KEY)
+	requestPayload := GeminiRequest{
+		Contents:         []GeminiContent{{Parts: []GeminiPart{{Text: promptText}}}},
+		GenerationConfig: &GeminiGenerationConfig{Temperature: 0.7, MaxOutputTokens: 250},
+	}
+	payloadBytes, err := json.Marshal(requestPayload)
+	if err != nil {
+		return "", fmt.Errorf("marshalling Gemini request failed: %w", err)
+	}
+	resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return "", fmt.Errorf("calling Gemini API failed: %w", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading Gemini response failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("ERROR: Gemini API non-OK status: %d, Body: %s", resp.StatusCode, string(bodyBytes))
+		return "", fmt.Errorf("AI service returned error: %s", resp.Status)
+	}
+
+	// Parse Response
+	var geminiResp GeminiResponse
+	if err := json.Unmarshal(bodyBytes, &geminiResp); err != nil {
+		log.Printf("ERROR: Unmarshalling Gemini response: %v\nBody: %s", err, string(bodyBytes))
+		return "", errors.New("error parsing AI response")
+	}
+	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
+		aiText := geminiResp.Candidates[0].Content.Parts[0].Text
+		log.Printf("AI RECOMMENDATION: Received for client %d", client.ID)
+		return aiText, nil
+	}
+	return "", errors.New("no recommendation text found in AI response")
 }
 
 // func createClient(client Client) (int64, error) {
@@ -3747,60 +3813,60 @@ func handleGeneratePortalLink(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"portalLink": fullURL})
 }
 
-// GET /api/portal/client/{token} (Public)
-func handleGetPublicClientData(w http.ResponseWriter, r *http.Request) {
-	token := chi.URLParam(r, "token")
-	if token == "" {
-		respondError(w, http.StatusBadRequest, "Missing access token")
-		return
-	}
+// // GET /api/portal/client/{token} (Public)
+// func handleGetPublicClientData(w http.ResponseWriter, r *http.Request) {
+// 	token := chi.URLParam(r, "token")
+// 	if token == "" {
+// 		respondError(w, http.StatusBadRequest, "Missing access token")
+// 		return
+// 	}
 
-	// Verify token and get IDs
-	clientID, agentUserID, err := verifyPortalToken(token)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusNotFound, "Invalid or expired link")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "Error validating link")
-		return
-	}
+// 	// Verify token and get IDs
+// 	clientID, agentUserID, err := verifyPortalToken(token)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			respondError(w, http.StatusNotFound, "Invalid or expired link")
+// 			return
+// 		}
+// 		respondError(w, http.StatusInternalServerError, "Error validating link")
+// 		return
+// 	}
 
-	// Fetch required data using the verified IDs
-	client, err := getClientByID(clientID, agentUserID) // Use agentID from token
-	if err != nil {
-		if err == sql.ErrNoRows {
-			respondError(w, http.StatusNotFound, "Client data not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "Failed to retrieve client data")
-		return
-	}
+// 	// Fetch required data using the verified IDs
+// 	client, err := getClientByID(clientID, agentUserID) // Use agentID from token
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			respondError(w, http.StatusNotFound, "Client data not found")
+// 			return
+// 		}
+// 		respondError(w, http.StatusInternalServerError, "Failed to retrieve client data")
+// 		return
+// 	}
 
-	policies, err := getPoliciesByClientID(clientID, agentUserID)
-	if err != nil {
-		log.Printf("WARN: Failed to fetch policies for portal view (Client %d): %v", clientID, err)
-		policies = []Policy{}
-	} // Don't fail request if policies fail
+// 	policies, err := getPoliciesByClientID(clientID, agentUserID)
+// 	if err != nil {
+// 		log.Printf("WARN: Failed to fetch policies for portal view (Client %d): %v", clientID, err)
+// 		policies = []Policy{}
+// 	} // Don't fail request if policies fail
 
-	documents, err := getDocumentsByClientID(clientID, agentUserID)
-	if err != nil {
-		log.Printf("WARN: Failed to fetch documents for portal view (Client %d): %v", clientID, err)
-		documents = []Document{}
-	} // Don't fail request if docs fail
+// 	documents, err := getDocumentsByClientID(clientID, agentUserID)
+// 	if err != nil {
+// 		log.Printf("WARN: Failed to fetch documents for portal view (Client %d): %v", clientID, err)
+// 		documents = []Document{}
+// 	} // Don't fail request if docs fail
 
-	// Construct public view
-	publicView := PublicClientView{
-		Name:      client.Name,
-		Email:     client.Email.String, // Only include if valid? Or always show? Let's show if present.
-		Phone:     client.Phone.String,
-		Policies:  policies,
-		Documents: documents,
-		// Add other fields as needed
-	}
+// 	// Construct public view
+// 	publicView := PublicClientView{
+// 		Name:      client.Name,
+// 		Email:     client.Email.String, // Only include if valid? Or always show? Let's show if present.
+// 		Phone:     client.Phone.String,
+// 		Policies:  policies,
+// 		Documents: documents,
+// 		// Add other fields as needed
+// 	}
 
-	respondJSON(w, http.StatusOK, publicView)
-}
+// 	respondJSON(w, http.StatusOK, publicView)
+// }
 
 // POST /api/portal/client/{token}/documents (Public)
 func handlePublicDocumentUpload(w http.ResponseWriter, r *http.Request) {
@@ -4815,6 +4881,76 @@ func getAgentInsurerDetailByInsurer(agentUserID int64, insurerName string) (*Age
 	return detail, nil
 }
 
+func handleGetPublicClientData(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if token == "" {
+		respondError(w, http.StatusBadRequest, "Missing access token")
+		return
+	}
+
+	// Verify token and get IDs
+	clientID, agentUserID, err := verifyPortalToken(token)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusNotFound, "Invalid or expired link")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Error validating link")
+		return
+	}
+
+	// Fetch required data using the verified IDs
+	client, err := getClientByID(clientID, agentUserID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusNotFound, "Client data not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve client data")
+		return
+	}
+
+	policies, err := getPoliciesByClientID(clientID, agentUserID)
+	if err != nil {
+		log.Printf("WARN: Failed to fetch policies for portal view (Client %d): %v", clientID, err)
+		policies = []Policy{}
+	}
+
+	documents, err := getDocumentsByClientID(clientID, agentUserID)
+	if err != nil {
+		log.Printf("WARN: Failed to fetch documents for portal view (Client %d): %v", clientID, err)
+		documents = []Document{}
+	}
+
+	// Fetch Communications
+	communications, err := getCommunicationsByClientID(clientID, agentUserID)
+	if err != nil {
+		log.Printf("WARN: Failed to fetch communications for portal view (Client %d): %v", clientID, err)
+		communications = []Communication{}
+	}
+
+	// Calculate Coverage Estimation
+	estimation := estimateCoverage(*client)
+
+	// Fetch AI Recommendation
+	aiRecText, err := fetchAiRecommendationForClient(*client, estimation)
+	if err != nil {
+		log.Printf("WARN: Failed to fetch AI recommendation for portal view (Client %d): %v", clientID, err)
+		aiRecText = "Could not generate AI recommendations at this time."
+	}
+
+	// Construct public view with ALL required data
+	publicView := PublicClientView{
+		Client:             *client, // Include full client object
+		Policies:           policies,
+		Documents:          documents,
+		Communications:     communications,
+		CoverageEstimation: estimation,
+		AiRecommendation:   aiRecText,
+	}
+
+	respondJSON(w, http.StatusOK, publicView)
+}
 func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
 	userID, ok := getUserIDFromContext(r.Context())
 	if !ok {
@@ -4999,7 +5135,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "http://localhost:3000"
+		frontendURLEnv = "http://localhost:8080"
 	} // Default frontend URL
 
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
@@ -5011,7 +5147,7 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "http://localhost:8080/verify?token=", ResetURL: "http://localhost:8080/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
