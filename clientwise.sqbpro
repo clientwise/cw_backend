@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?><sqlb_project><db path="clientwise.db" readonly="0" foreign_keys="1" case_sensitive_like="0" temp_store="0" wal_autocheckpoint="1000" synchronous="2"/><attached/><window><main_tabs open="structure browser pragmas query" current="3"/></window><tab_structure><column_width id="0" width="300"/><column_width id="1" width="0"/><column_width id="2" width="100"/><column_width id="3" width="3722"/><column_width id="4" width="0"/><expanded_item id="0" parent="1"/><expanded_item id="1" parent="1"/><expanded_item id="2" parent="1"/><expanded_item id="3" parent="1"/></tab_structure><tab_browse><table title="activity_log" custom_title="0" dock_id="1" table="4,12:mainactivity_log"/><table title="products" custom_title="0" dock_id="2" table="4,8:mainproducts"/><dock_state state="000000ff00000000fd0000000100000002000004b600000409fc0100000001fc00000000000004b60000010100fffffffa000000010100000002fb000000160064006f0063006b00420072006f00770073006500310100000000ffffffff0000010100fffffffb000000160064006f0063006b00420072006f00770073006500320100000000ffffffff0000010100ffffff000002c00000000000000004000000040000000800000008fc00000000"/><default_encoding codec=""/><browse_table_settings><table schema="main" name="products" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_" freeze_columns="0"><sort/><column_widths><column index="1" value="21"/><column index="2" value="44"/><column index="3" value="66"/><column index="4" value="54"/><column index="5" value="82"/><column index="6" value="49"/><column index="7" value="63"/><column index="8" value="68"/><column index="9" value="39"/><column index="10" value="77"/><column index="11" value="76"/><column index="12" value="138"/><column index="13" value="114"/><column index="14" value="92"/><column index="15" value="86"/><column index="16" value="107"/><column index="17" value="224"/><column index="18" value="201"/><column index="19" value="79"/><column index="20" value="83"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table></browse_table_settings></tab_browse><tab_sql><sql name="SQL 1*">INSERT INTO products (
+    id,
+    name,
+    category,
+    insurer,
+    description,
+    status,
+    features,
+    eligibility,
+    term,
+    exclusions,
+    room_rent,
+    premium_indication,
+    insurer_logo_url,
+    brochure_url,
+    wording_url,
+    claim_form_url,
+    created_at,
+    updated_at
+) VALUES
+(1, 'Niva Bupa Ressure-Health', 'Health', 'Niva Bupa', 'Health Cover for Senior Citizens', 'Active', '[&quot;No Room Limits&quot;, &quot;No Co-payments&quot;, &quot;All critical Illness Covered&quot;]', 'Age &gt; 18 years, &lt; 65 years', '1 year', 'None', 'No Cap', '36000 for 1 person', 'https://scontent.fbom6-1.fna.fbcdn.net/v/t39.30808-6/247150942_4775112079180041_1428559619369484835_n.jpg?_nc_cat=102&amp;ccb=1-7&amp;_nc_sid=6ee11a&amp;_nc_ohc=rStaKFx2Fu4Q7kNvwFcMLz-&amp;_nc_oc=AdkGY5WECrxfjBxyXSVofQLHpNzNUn20SEBiyCOJlxcVn1cdCjZHnNGErxk1cVAakYE&amp;_nc_zt=23&amp;_nc_ht=scontent.fbom6-1.fna&amp;_nc_gid=he2eKWYCWS-vDO-ShQy3mQ&amp;oh=00_AfGfkwCjaYgmRGKFTqpMtL-8Tx60LBxOMPf-yXSquC0RYw&amp;oe=680C57F4', 'https://www.nivabupa.com/content/dam/nivabupa/PDF/reassure-2-0/ReAssure%202.0%20-%20SS.pdf', 'https://www.nivabupa.com/content/dam/nivabupa/PDF/reassure-2-0/ReAssure%202.0%20-%20Policy%20Wording.pdf', 'https://www.nivabupa.com/content/dam/nivabupa/PDF/Combo/health-companion-claim-form.pdf', '2006-01-02 15:04:00', '2006-01-02 15:04:00');</sql><current_tab id="0"/></tab_sql></sqlb_project>

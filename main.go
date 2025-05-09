@@ -57,6 +57,23 @@ type AgentInsurerRelation struct {
 	SpocEmail                   sql.NullString  `json:"spocEmail"`
 	UpfrontCommissionPercentage sql.NullFloat64 `json:"upfrontCommissionPercentage"` // NEW
 	TrailCommissionPercentage   sql.NullFloat64 `json:"trailCommissionPercentage"`   // NEW
+	ProductID                   string          `json:"product_id"`
+	Name                        string          `json:"name"`
+	Category                    string          `json:"category"`
+	Description                 sql.NullString  `json:"description"`
+	Status                      string          `json:"status"`
+	Features                    sql.NullString  `json:"features"`
+	Eligibility                 sql.NullString  `json:"eligibility"`
+	Term                        sql.NullString  `json:"term"`
+	Exclusions                  sql.NullString  `json:"exclusions"`
+	RoomRent                    sql.NullString  `json:"roomRent"`
+	PremiumIndication           sql.NullString  `json:"premiumIndication"`
+	InsurerLogoURL              sql.NullString  `json:"insurerLogo"`
+	BrochureURL                 sql.NullString  `json:"brochureUrl"`
+	WordingURL                  sql.NullString  `json:"wordingUrl"`
+	ClaimFormURL                sql.NullString  `json:"claimFormUrl"`
+	CreatedAt                   time.Time       `json:"createdAt"`
+	UpdatedAt                   sql.NullTime    `json:"updatedAt"`
 }
 
 type FullAgentProfileWithRelations struct {
@@ -258,8 +275,16 @@ type Product struct {
 	UpdatedAt                   sql.NullTime    `json:"updatedAt"`
 }
 
-type UpdateInsurerRelationsPayload struct {
-	Relations []AgentInsurerRelation `json:"relations"` // Frontend sends list including commission %
+type UpdateInsurerRelationsRequest struct {
+	Relations []UpdateInsurerPayload `json:"relations"`
+}
+
+type UpdateInsurerPayload struct {
+	InsurerName                 string  `json:"insurerName"`
+	AgentCode                   string  `json:"agentCode"`
+	SpocEmail                   string  `json:"spocEmail"`
+	UpfrontCommissionPercentage float64 `json:"upfrontCommissionPercentage"`
+	TrailCommissionPercentage   float64 `json:"trailCommissionPercentage"`
 }
 
 // NEW: Struct for bulk upload result summary
@@ -373,16 +398,23 @@ func setAgentInsurerRelations(agentUserID int64, relations []AgentInsurerRelatio
 	}
 	defer tx.Rollback()
 
-	// 1. Delete existing relations
+	// Delete old relations
 	_, err = tx.Exec("DELETE FROM agent_insurer_relations WHERE agent_user_id = ?", agentUserID)
 	if err != nil {
 		return fmt.Errorf("failed to delete existing relations: %w", err)
 	}
 
-	// 2. Insert new relations
-	stmt, err := tx.Prepare(`INSERT INTO agent_insurer_relations
-        (agent_user_id, insurer_name, agent_code, spoc_email, upfront_commission_percentage, trail_commission_percentage)
-        VALUES (?, ?, ?, ?, ?, ?)`) // Added new columns
+	// Prepare insert
+	stmt, err := tx.Prepare(`
+		INSERT INTO agent_insurer_relations (
+			agent_user_id, insurer_name, agent_code, spoc_email, 
+			upfront_commission_percentage, trail_commission_percentage,
+			name, category, description, status, features, eligibility,
+			term, exclusions, room_rent, premium_indication,
+			insurer_logo_url, brochure_url, wording_url, claim_form_url,
+			created_at,product_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
+	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare insert relation: %w", err)
 	}
@@ -391,6 +423,9 @@ func setAgentInsurerRelations(agentUserID int64, relations []AgentInsurerRelatio
 	insertCount := 0
 	maxRelations := 25
 	seenInsurers := make(map[string]bool)
+
+	now := time.Now()
+
 	for i, rel := range relations {
 		if i >= maxRelations {
 			log.Printf("WARN: Max insurer relations (%d) reached for agent %d.", maxRelations, agentUserID)
@@ -405,7 +440,30 @@ func setAgentInsurerRelations(agentUserID int64, relations []AgentInsurerRelatio
 			continue
 		}
 
-		_, err = stmt.Exec(agentUserID, rel.InsurerName, rel.AgentCode, rel.SpocEmail, rel.UpfrontCommissionPercentage, rel.TrailCommissionPercentage) // Insert new columns
+		_, err = stmt.Exec(
+			agentUserID,
+			rel.InsurerName,
+			rel.AgentCode,
+			rel.SpocEmail,
+			rel.UpfrontCommissionPercentage,
+			rel.TrailCommissionPercentage,
+			rel.Name,
+			rel.Category,
+			rel.Description,
+			rel.Status,
+			rel.Features,
+			rel.Eligibility,
+			rel.Term,
+			rel.Exclusions,
+			rel.RoomRent,
+			rel.PremiumIndication,
+			rel.InsurerLogoURL,
+			rel.BrochureURL,
+			rel.WordingURL,
+			rel.ClaimFormURL,
+			now,
+			rel.ProductID,
+		)
 		if err != nil {
 			return fmt.Errorf("failed to insert relation for insurer '%s': %w", rel.InsurerName, err)
 		}
@@ -829,7 +887,32 @@ func setupDatabase() error {
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, content TEXT NOT NULL, category TEXT, posted_by TEXT, is_important BOOLEAN NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`, "notices"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_user_id INTEGER NOT NULL, name TEXT NOT NULL, email TEXT, phone TEXT, dob TEXT, address TEXT, status TEXT CHECK(status IN ('Lead', 'Active', 'Lapsed')), tags TEXT, last_contacted_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(agent_user_id, email), UNIQUE(agent_user_id, phone), FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "clients"); err != nil {
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS clients (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		agent_user_id INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		email TEXT,
+		phone TEXT,
+		dob TEXT,
+		address TEXT,
+		status TEXT CHECK(status IN ('Lead', 'Active', 'Lapsed')) NOT NULL,
+		tags TEXT,
+		last_contacted_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		income REAL,
+		marital_status TEXT,
+		city TEXT,
+		job_profile TEXT,
+		dependents INTEGER,
+		liability REAL,
+		housing_type TEXT,
+		vehicle_count INTEGER,
+		vehicle_type TEXT,
+		vehicle_cost REAL,
+		UNIQUE(agent_user_id, email),
+		UNIQUE(agent_user_id, phone),
+		FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+	);`, "clients"); err != nil {
 		return err
 	}
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, insurer TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'Active', features TEXT, eligibility TEXT, term TEXT, exclusions TEXT, room_rent TEXT, premium_indication TEXT, insurer_logo_url TEXT, brochure_url TEXT, wording_url TEXT, claim_form_url TEXT, upfront_commission_percentage REAL DEFAULT 0.0, trail_commission_percentage REAL DEFAULT 0.0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP);`, "products"); err != nil {
@@ -925,29 +1008,35 @@ func setupDatabase() error {
 
 	// NEW/UPDATED: Agent Insurer Relations Table
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_insurer_relations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        agent_user_id INTEGER NOT NULL,
-        insurer_name TEXT NOT NULL,
-        agent_code TEXT,
-        spoc_email TEXT,
-        upfront_commission_percentage REAL, -- NEW
-        trail_commission_percentage REAL,   -- NEW
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
-        UNIQUE(agent_user_id, insurer_name)
-    );`, "agent_insurer_relations"); err != nil {
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		agent_user_id INTEGER NOT NULL,
+		insurer_name TEXT NOT NULL,
+		agent_code TEXT,
+		spoc_email TEXT,
+		upfront_commission_percentage REAL,
+		trail_commission_percentage REAL,
+		name TEXT NOT NULL,
+		category TEXT NOT NULL,
+		description TEXT,
+		status TEXT NOT NULL,
+		features TEXT,
+		eligibility TEXT,
+		term TEXT,
+		exclusions TEXT,
+		room_rent TEXT,
+		premium_indication TEXT,
+		insurer_logo_url TEXT,
+		brochure_url TEXT,
+		wording_url TEXT,
+		claim_form_url TEXT,
+		product_id TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP,
+		FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+		UNIQUE(agent_user_id, insurer_name)
+	);`, "agent_insurer_relations"); err != nil {
 		return err
 	}
-	addColumn := func(tableName, colName, colType string) {
-		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, colName, colType))
-		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			log.Printf("WARN: Could not add column %s to %s: %v", colName, tableName, err)
-		} else if err == nil {
-			log.Printf("DATABASE: Added column %s to %s table.", colName, tableName)
-		}
-	}
-	addColumn("agent_insurer_relations", "upfront_commission_percentage", "REAL")
-	addColumn("agent_insurer_relations", "trail_commission_percentage", "REAL")
 
 	// NEW: Agent Goals Table
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_goals (
@@ -1470,19 +1559,19 @@ func handleGetSalesPerformance(w http.ResponseWriter, r *http.Request) {
 // 	return nil
 // }
 
-func getProducts(categoryFilter, insurerFilter, searchTerm string) ([]Product, error) {
-	query := `SELECT id, name, category, insurer, description, status, features, eligibility, term, exclusions, room_rent, premium_indication, insurer_logo_url, brochure_url, wording_url, claim_form_url, upfront_commission_percentage, trail_commission_percentage, created_at, updated_at FROM products WHERE status = 'Active'`
-	args := []interface{}{}
+func getProducts(userID int64, categoryFilter, insurerFilter, searchTerm string) ([]AgentInsurerRelation, error) {
+	query := `SELECT id, name, category, insurer_name, product_id, description, status, features, eligibility, term, exclusions, room_rent, premium_indication, insurer_logo_url, brochure_url, wording_url, claim_form_url, upfront_commission_percentage, trail_commission_percentage, created_at, updated_at FROM agent_insurer_relations where agent_user_id=?`
+	args := []interface{}{userID}
 	if categoryFilter != "" && categoryFilter != "All Categories" {
 		query += " AND category = ?"
 		args = append(args, categoryFilter)
 	}
 	if insurerFilter != "" && insurerFilter != "All Insurers" {
-		query += " AND insurer = ?"
+		query += " AND insurer_name = ?"
 		args = append(args, insurerFilter)
 	}
 	if searchTerm != "" {
-		query += " AND (name LIKE ? OR insurer LIKE ? OR description LIKE ?)"
+		query += " AND (name LIKE ? OR insurer_name LIKE ? OR description LIKE ?)"
 		term := "%" + searchTerm + "%"
 		args = append(args, term, term, term)
 	}
@@ -1493,10 +1582,10 @@ func getProducts(categoryFilter, insurerFilter, searchTerm string) ([]Product, e
 		return nil, fmt.Errorf("database query error")
 	}
 	defer rows.Close()
-	products := []Product{}
+	products := []AgentInsurerRelation{}
 	for rows.Next() {
-		var p Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.Category, &p.Insurer, &p.Description, &p.Status, &p.Features, &p.Eligibility, &p.Term, &p.Exclusions, &p.RoomRent, &p.PremiumIndication, &p.InsurerLogoURL, &p.BrochureURL, &p.WordingURL, &p.ClaimFormURL, &p.UpfrontCommissionPercentage, &p.TrailCommissionPercentage, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var p AgentInsurerRelation
+		if err := rows.Scan(&p.ID, &p.Name, &p.Category, &p.InsurerName, &p.ProductID, &p.Description, &p.Status, &p.Features, &p.Eligibility, &p.Term, &p.Exclusions, &p.RoomRent, &p.PremiumIndication, &p.InsurerLogoURL, &p.BrochureURL, &p.WordingURL, &p.ClaimFormURL, &p.UpfrontCommissionPercentage, &p.TrailCommissionPercentage, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			log.Printf("ERROR: Failed to scan product row: %v\n", err)
 			continue
 		}
@@ -3630,6 +3719,11 @@ func handleGetCommissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func productsHandler(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Could not get user ID from context")
+		return
+	}
 	// Check if DB was initialized
 	if db == nil {
 		log.Println("ERROR: Database connection is not available for /api/products")
@@ -3642,9 +3736,8 @@ func productsHandler(w http.ResponseWriter, r *http.Request) {
 	// --- Data Source: Database Query ---
 	// IMPORTANT: Replace 'your_products_table' with your actual table name.
 	// Ensure columns 'id' and 'name' exist and match the Product struct fields.
-	query := `SELECT id, name FROM products ORDER BY name ASC`
-
-	rows, err := db.Query(query)
+	query := `SELECT product_id, name FROM agent_insurer_relations WHERE agent_user_id = ?`
+	rows, err := db.Query(query, agentUserID)
 	if err != nil {
 		log.Printf("Error querying database for products: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -3654,9 +3747,9 @@ func productsHandler(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	// --- Scan Results ---
-	products := []Product{} // Initialize an empty slice to hold results
-	for rows.Next() {       // Iterate through each row returned
-		var p Product // Create a temporary Product struct
+	products := []AgentInsurerRelation{} // Initialize an empty slice to hold results
+	for rows.Next() {                    // Iterate through each row returned
+		var p AgentInsurerRelation // Create a temporary Product struct
 
 		// Scan the values from the current row into the fields.
 		// Assumes 'id' and 'name' columns are NOT NULL in the DB.
@@ -5160,6 +5253,34 @@ func handleGetPublicClientData(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, publicView)
 }
 
+func handleGetUniqueInsurers(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(`SELECT DISTINCT insurer FROM products WHERE insurer IS NOT NULL AND insurer != ''`)
+	if err != nil {
+		log.Printf("ERROR: Failed to fetch distinct insurers: %v\n", err)
+		respondError(w, http.StatusInternalServerError, "Failed to fetch insurers")
+		return
+	}
+	defer rows.Close()
+
+	var insurers []string
+	for rows.Next() {
+		var insurer string
+		if err := rows.Scan(&insurer); err != nil {
+			log.Printf("ERROR: Failed to scan insurer: %v\n", err)
+			continue
+		}
+		insurers = append(insurers, insurer)
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("ERROR: Iteration error: %v\n", err)
+		respondError(w, http.StatusInternalServerError, "Error processing insurers")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string][]string{"insurers": insurers})
+}
+
 func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
 	userID, ok := getUserIDFromContext(r.Context())
 	if !ok { /* ... */
@@ -5191,19 +5312,90 @@ func handleGetAgentProfile(w http.ResponseWriter, r *http.Request) {
 // PUT /api/agents/insurer-details
 func handleUpdateAgentInsurerRelations(w http.ResponseWriter, r *http.Request) {
 	userID, ok := getUserIDFromContext(r.Context())
-	if !ok { /* ... */
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
-	var payload UpdateInsurerRelationsPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil { /* ... */
-	}
-	maxRelations := 25
-	if len(payload.Relations) > maxRelations { /* ... handle error ... */
-	}
-	// TODO: Add email format validation for each rel.SpocEmail
 
-	err := setAgentInsurerRelations(userID, payload.Relations)
-	if err != nil { /* ... handle error ... */
+	var req UpdateInsurerRelationsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid payload: %v", err), http.StatusBadRequest)
+		return
 	}
+
+	var relations []AgentInsurerRelation
+	now := time.Now()
+
+	for _, payload := range req.Relations {
+		insurer := strings.TrimSpace(payload.InsurerName)
+		if insurer == "" {
+			continue
+		}
+
+		rows, err := db.Query(`SELECT
+			id, name, category, description, status, features, eligibility, term, exclusions,
+			room_rent, premium_indication, insurer_logo_url, brochure_url, wording_url, claim_form_url
+			FROM products
+			WHERE TRIM(LOWER(insurer)) = TRIM(LOWER(?))`, insurer)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to fetch products for insurer '%s': %v", insurer, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close() // Close rows here
+
+		for rows.Next() {
+			var p Product
+			if err := rows.Scan(
+				&p.ID, &p.Name, &p.Category, &p.Description, &p.Status, &p.Features, &p.Eligibility,
+				&p.Term, &p.Exclusions, &p.RoomRent, &p.PremiumIndication, &p.InsurerLogoURL,
+				&p.BrochureURL, &p.WordingURL, &p.ClaimFormURL,
+			); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to read product row: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			// Trim any newlines or spaces and parse updated_at from string to time.Time
+			relations = append(relations, AgentInsurerRelation{
+				AgentUserID:                 userID,
+				InsurerName:                 insurer,
+				AgentCode:                   sql.NullString{String: payload.AgentCode, Valid: payload.AgentCode != ""},
+				SpocEmail:                   sql.NullString{String: payload.SpocEmail, Valid: payload.SpocEmail != ""},
+				UpfrontCommissionPercentage: sql.NullFloat64{Float64: payload.UpfrontCommissionPercentage, Valid: true},
+				TrailCommissionPercentage:   sql.NullFloat64{Float64: payload.TrailCommissionPercentage, Valid: true},
+				Name:                        p.Name,
+				Category:                    p.Category,
+				Description:                 p.Description,
+				Status:                      p.Status,
+				Features:                    p.Features,
+				Eligibility:                 p.Eligibility,
+				Term:                        p.Term,
+				Exclusions:                  p.Exclusions,
+				RoomRent:                    p.RoomRent,
+				PremiumIndication:           p.PremiumIndication,
+				InsurerLogoURL:              p.InsurerLogoURL,
+				BrochureURL:                 p.BrochureURL,
+				WordingURL:                  p.WordingURL,
+				ClaimFormURL:                p.ClaimFormURL,
+				CreatedAt:                   now,
+				ProductID:                   p.ID,
+			})
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, fmt.Sprintf("Error during rows iteration: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if len(relations) == 0 {
+		http.Error(w, "No products found for the given insurers", http.StatusBadRequest)
+		return
+	}
+
+	if err := setAgentInsurerRelations(userID, relations); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to save agent-insurer relations: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	logActivity(userID, "insurer_relations_updated", "Agent insurer relations updated", "")
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Insurer relations updated successfully"})
 }
@@ -5262,12 +5454,17 @@ func handleSendProposalEmail(w http.ResponseWriter, r *http.Request) {
 
 // UPDATED: Get Products Handler (adds agent filter)
 func handleGetProducts(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusInternalServerError, "Auth error")
+		return
+	}
 	categoryFilter := r.URL.Query().Get("category")
 	insurerFilter := r.URL.Query().Get("insurer")
 	searchTerm := r.URL.Query().Get("search")
 	// agentIdStr := r.URL.Query().Get("agentId")
 	// agentIdFilter, _ := strconv.ParseInt(agentIdStr, 10, 64)
-	products, err := getProducts(categoryFilter, insurerFilter, searchTerm) // Pass agentIdFilter
+	products, err := getProducts(userID, categoryFilter, insurerFilter, searchTerm) // Pass agentIdFilter
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to retrieve products")
 		return
@@ -5428,7 +5625,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "http://localhost:3000"
+		frontendURLEnv = "http://localhost:3001"
 	} // Default frontend URL
 
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
@@ -5461,6 +5658,7 @@ func main() {
 	r.Post("/forgot-password", handleForgotPassword)
 	r.Post("/reset-password", handleResetPassword)
 	r.Post("/api/onboard", handlePublicOnboarding)
+	r.Get("/api/unique-insurers", handleGetUniqueInsurers)
 	r.Route("/api/portal/client/{token}", func(r chi.Router) {
 		r.Get("/", handleGetPublicClientData)
 		r.Post("/documents", handlePublicDocumentUpload)
