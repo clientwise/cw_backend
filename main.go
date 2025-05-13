@@ -5805,7 +5805,7 @@ func main() {
 		dbPassword := os.Getenv("DB_PASSWORD")
 		dbName := os.Getenv("DBNAME")
 
-		dbDSN = dbUser + ":" + dbPassword + "@tcp(" + dbHost + ")/" + dbName + "?parseTime=true"
+		dbDSN = dbUser + ":" + dbPassword + "@unix(" + dbHost + ")/" + dbName + "?parseTime=true"
 
 		log.Println("WARNING: DB_DSN environment variable not set, using constructed DSN. THIS IS NOT FOR PRODUCTION.")
 	}
