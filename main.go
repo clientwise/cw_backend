@@ -31,21 +31,21 @@ import (
 	"github.com/go-chi/cors" // Optional: For easier CORS config with chi
 
 	// Import CGO-Free SQLite driver (run: go get modernc.org/sqlite)
-	_ "modernc.org/sqlite"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // --- Configuration ---
 
 type Config struct {
 	ListenAddr      string
-	DBPath          string
+	DBDSN           string // For MySQL DSN (e.g., "user:password@tcp(127.0.0.1:3306)/dbname?parseTime=true")
 	VerificationURL string
 	ResetURL        string
 	CorsOrigin      string
 	MockEmailFrom   string
-	JWTSecret       string // Loaded from ENV
+	JWTSecret       string
 	JWTExpiryHours  int
-	UploadPath      string // Path to store uploaded documents
+	UploadPath      string
 	FrontendURL     string
 }
 
@@ -859,9 +859,10 @@ func updateClient(clientID int64, agentUserID int64, client Client) error {
 
 // --- Database Functions ---
 func setupDatabase() error {
-	log.Println("DATABASE: Setting up SQLite database...")
+	log.Println("DATABASE: Setting up MySQL database...")
 	var err error
-	db, err = sql.Open("sqlite", config.DBPath+"?_pragma=foreign_keys(1)")
+	// The MySQL connection string will use config.DBDSN
+	db, err = sql.Open("mysql", config.DBDSN) // Use the DSN from your config
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -878,175 +879,339 @@ func setupDatabase() error {
 	}
 
 	// Create All Tables...
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, user_type TEXT NOT NULL CHECK(user_type IN ('agent', 'agency')), is_verified BOOLEAN NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`, "users"); err != nil {
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS users (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        user_type VARCHAR(10) NOT NULL CHECK(user_type IN ('agent', 'agency')),
+        is_verified BOOLEAN NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "users"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS tokens (user_id INTEGER NOT NULL, token_hash TEXT NOT NULL, purpose TEXT NOT NULL CHECK(purpose IN ('verification', 'reset')), expires_at TIMESTAMP NOT NULL, PRIMARY KEY (user_id, purpose), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);`, "tokens"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS tokens (
+        user_id INT NOT NULL,
+        token_hash VARCHAR(255) NOT NULL,
+        purpose VARCHAR(20) NOT NULL CHECK(purpose IN ('verification', 'reset')),
+        expires_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (user_id, purpose),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "tokens"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, content TEXT NOT NULL, category TEXT, posted_by TEXT, is_important BOOLEAN NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`, "notices"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS notices (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        title VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        category VARCHAR(100),
+        posted_by VARCHAR(100),
+        is_important BOOLEAN NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "notices"); err != nil {
 		return err
 	}
+
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS clients (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		agent_user_id INTEGER NOT NULL,
-		name TEXT NOT NULL,
-		email TEXT,
-		phone TEXT,
-		dob TEXT,
-		address TEXT,
-		status TEXT CHECK(status IN ('Lead', 'Active', 'Lapsed')) NOT NULL,
-		tags TEXT,
-		last_contacted_at TIMESTAMP,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		income REAL,
-		marital_status TEXT,
-		city TEXT,
-		job_profile TEXT,
-		dependents INTEGER,
-		liability REAL,
-		housing_type TEXT,
-		vehicle_count INTEGER,
-		vehicle_type TEXT,
-		vehicle_cost REAL,
-		UNIQUE(agent_user_id, email),
-		UNIQUE(agent_user_id, phone),
-		FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
-	);`, "clients"); err != nil {
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        agent_user_id INT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255),
+        phone VARCHAR(50),
+        dob VARCHAR(20), -- Consider DATE type if format is guaranteed
+        address TEXT,
+        status VARCHAR(20) CHECK(status IN ('Lead', 'Active', 'Lapsed')) NOT NULL,
+        tags TEXT,
+        last_contacted_at TIMESTAMP NULL DEFAULT NULL, -- Explicitly allow NULL
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        income DECIMAL(15, 2),
+        marital_status VARCHAR(50),
+        city VARCHAR(100),
+        job_profile VARCHAR(100),
+        dependents INT,
+        liability DECIMAL(15, 2),
+        housing_type VARCHAR(50),
+        vehicle_count INT,
+        vehicle_type VARCHAR(100),
+        vehicle_cost DECIMAL(15, 2),
+        UNIQUE(agent_user_id, email),
+        UNIQUE(agent_user_id, phone),
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "clients"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, insurer TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'Active', features TEXT, eligibility TEXT, term TEXT, exclusions TEXT, room_rent TEXT, premium_indication TEXT, insurer_logo_url TEXT, brochure_url TEXT, wording_url TEXT, claim_form_url TEXT, upfront_commission_percentage REAL DEFAULT 0.0, trail_commission_percentage REAL DEFAULT 0.0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP);`, "products"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS products (
+        id VARCHAR(100) PRIMARY KEY, -- Assuming product IDs are like "PROD-XYZ"
+        name VARCHAR(255) NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        insurer VARCHAR(100) NOT NULL,
+        description TEXT,
+        status VARCHAR(50) DEFAULT 'Active',
+        features TEXT,
+        eligibility TEXT,
+        term VARCHAR(100),
+        exclusions TEXT,
+        room_rent VARCHAR(100),
+        premium_indication VARCHAR(255),
+        insurer_logo_url VARCHAR(2083), -- Max URL length
+        brochure_url VARCHAR(2083),
+        wording_url VARCHAR(2083),
+        claim_form_url VARCHAR(2083),
+        upfront_commission_percentage DOUBLE DEFAULT 0.0,
+        trail_commission_percentage DOUBLE DEFAULT 0.0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP -- Auto-updates on modification
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "products"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS policies (id TEXT PRIMARY KEY, client_id INTEGER NOT NULL, agent_user_id INTEGER NOT NULL, product_id TEXT, policy_number TEXT NOT NULL, insurer TEXT, premium REAL, sum_insured REAL, start_date TEXT, end_date TEXT, status TEXT, policy_doc_url TEXT, upfront_commission_amount REAL DEFAULT 0.0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP, FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL );`, "policies"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS policies (
+        id VARCHAR(100) PRIMARY KEY, -- Assuming policy IDs are like "POL-XYZ"
+        client_id INT NOT NULL,
+        agent_user_id INT NOT NULL,
+        product_id VARCHAR(100),
+        policy_number VARCHAR(100) NOT NULL,
+        insurer VARCHAR(100),
+        premium DECIMAL(15, 2),
+        sum_insured DECIMAL(15, 2),
+        start_date VARCHAR(20), -- Consider DATE type
+        end_date VARCHAR(20),   -- Consider DATE type
+        status VARCHAR(50),
+        policy_doc_url VARCHAR(2083),
+        upfront_commission_amount DECIMAL(15, 2) DEFAULT 0.0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "policies"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS communications (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, agent_user_id INTEGER NOT NULL, type TEXT, timestamp TIMESTAMP, summary TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "communications"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS communications (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        client_id INT NOT NULL,
+        agent_user_id INT NOT NULL,
+        type VARCHAR(50),
+        timestamp TIMESTAMP NULL, -- Store actual timestamp from interaction
+        summary TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Record creation time
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "communications"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, agent_user_id INTEGER NOT NULL, description TEXT NOT NULL, due_date TEXT, is_urgent BOOLEAN DEFAULT 0, is_completed BOOLEAN DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP, FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "tasks"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS tasks (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        client_id INT NOT NULL, -- Assuming tasks are always client-specific
+        agent_user_id INT NOT NULL,
+        description TEXT NOT NULL,
+        due_date VARCHAR(20), -- Consider DATE type
+        is_urgent BOOLEAN DEFAULT 0,
+        is_completed BOOLEAN DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "tasks"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, agent_user_id INTEGER NOT NULL, title TEXT, document_type TEXT, file_url TEXT NOT NULL, uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "documents"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS documents (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        client_id INT NOT NULL,
+        agent_user_id INT NOT NULL,
+        title VARCHAR(255),
+        document_type VARCHAR(100),
+        file_url VARCHAR(2083) NOT NULL,
+        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "documents"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS marketing_campaigns (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_user_id INTEGER NOT NULL, name TEXT NOT NULL, status TEXT, target_segment_name TEXT, sent_at TIMESTAMP, stats_opens INTEGER DEFAULT 0, stats_clicks INTEGER DEFAULT 0, stats_leads INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "marketing_campaigns"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS marketing_campaigns (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        agent_user_id INT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        status VARCHAR(50),
+        target_segment_name VARCHAR(255),
+        sent_at TIMESTAMP NULL DEFAULT NULL,
+        stats_opens INT DEFAULT 0,
+        stats_clicks INT DEFAULT 0,
+        stats_leads INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "marketing_campaigns"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS marketing_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT, category TEXT, preview_text TEXT, content TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`, "marketing_templates"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS marketing_templates (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        name VARCHAR(255) NOT NULL,
+        type VARCHAR(50),
+        category VARCHAR(100),
+        preview_text TEXT,
+        content MEDIUMTEXT, -- For potentially large HTML email templates
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "marketing_templates"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS marketing_content (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, content_type TEXT, description TEXT, gcs_url TEXT NOT NULL, thumbnail_url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`, "marketing_content"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS marketing_content (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        title VARCHAR(255) NOT NULL,
+        content_type VARCHAR(50),
+        description TEXT,
+        gcs_url VARCHAR(2083) NOT NULL,
+        thumbnail_url VARCHAR(2083),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "marketing_content"); err != nil {
 		return err
 	}
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS client_segments (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_user_id INTEGER NOT NULL, name TEXT NOT NULL, criteria TEXT, client_count INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "client_segments"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS client_segments (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        agent_user_id INT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        criteria TEXT,
+        client_count INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "client_segments"); err != nil {
 		return err
 	}
-	// NEW: Activity Log Table
-	if err := execSQL(`CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_user_id INTEGER NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, activity_type TEXT NOT NULL, description TEXT NOT NULL, related_id TEXT, FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE);`, "activity_log"); err != nil {
+
+	if err := execSQL(`CREATE TABLE IF NOT EXISTS activity_log (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        agent_user_id INT NOT NULL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        activity_type VARCHAR(100) NOT NULL,
+        description TEXT NOT NULL,
+        related_id VARCHAR(100), -- If related ID can be non-integer
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "activity_log"); err != nil {
 		return err
 	}
-	// NEW: Agent Insurer POCs Table
+
+	// The agent_insurer_pocs table is created here, but then dropped below.
+	// This seems like an evolution of the schema.
+	// If agent_insurer_relations is the final table, agent_insurer_pocs might not be needed.
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_insurer_pocs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			agent_user_id INTEGER NOT NULL,
-			insurer_name TEXT NOT NULL,
-			poc_email TEXT NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
-			UNIQUE(agent_user_id, insurer_name) -- An agent should have only one POC per insurer
-		);`, "agent_insurer_pocs"); err != nil {
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            agent_user_id INT NOT NULL,
+            insurer_name VARCHAR(255) NOT NULL,
+            poc_email VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(agent_user_id, insurer_name)
+        ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "agent_insurer_pocs"); err != nil {
 		return err
 	}
 
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS client_portal_tokens (
-        token TEXT PRIMARY KEY,
-        client_id INTEGER NOT NULL,
-        agent_user_id INTEGER NOT NULL,
+        token VARCHAR(255) PRIMARY KEY,
+        client_id INT NOT NULL,
+        agent_user_id INT NOT NULL,
         expires_at TIMESTAMP NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
         FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE
-    );`, "client_portal_tokens"); err != nil {
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "client_portal_tokens"); err != nil {
 		return err
 	}
-	// Index for faster lookup
+
+	// Index creation syntax is generally compatible
 	if err := execSQL(`CREATE INDEX IF NOT EXISTS idx_client_portal_tokens_expiry ON client_portal_tokens (expires_at);`, "idx_client_portal_tokens_expiry"); err != nil {
 		return err
 	}
+
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_profiles (
-        user_id INTEGER PRIMARY KEY,
-        mobile TEXT,
-        gender TEXT,
+        user_id INT PRIMARY KEY,
+        mobile VARCHAR(50),
+        gender VARCHAR(20),
         postal_address TEXT,
-        agency_name TEXT,
-        pan TEXT UNIQUE,
-        bank_name TEXT,
-        bank_account_no TEXT,
-        bank_ifsc TEXT,
+        agency_name VARCHAR(255),
+        pan VARCHAR(20) UNIQUE,
+        bank_name VARCHAR(100),
+        bank_account_no VARCHAR(50),
+        bank_ifsc VARCHAR(20),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );`, "agent_profiles"); err != nil {
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "agent_profiles"); err != nil {
 		return err
 	}
 
+	// The agent_insurer_details table is created here, but then dropped below.
+	// This also seems like an evolution of the schema.
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_insurer_details (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        agent_user_id INTEGER NOT NULL,
-        insurer_name TEXT NOT NULL,
-        agent_code TEXT,
-        spoc_email TEXT,
-        commission_percentage REAL,
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        agent_user_id INT NOT NULL,
+        insurer_name VARCHAR(255) NOT NULL,
+        agent_code VARCHAR(100),
+        spoc_email VARCHAR(255),
+        commission_percentage DOUBLE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
-        UNIQUE(agent_user_id, insurer_name) -- Agent should have only one entry per insurer
-    );`, "agent_insurer_details"); err != nil {
+        UNIQUE(agent_user_id, insurer_name)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "agent_insurer_details"); err != nil {
 		return err
 	}
+
+	// WARNING: These DROP TABLE statements will remove the tables immediately after creation if they exist.
+	// If agent_insurer_relations is the intended final schema for insurer contact/commission details,
+	// then agent_insurer_pocs and agent_insurer_details might be obsolete.
+	// If these drops are for cleanup before creating a definitive version, they should be placed earlier.
+	// I am keeping them as per your original code snippet's structure.
 	_, _ = db.Exec("DROP TABLE IF EXISTS agent_insurer_pocs;")
-	_, _ = db.Exec("DROP TABLE IF EXISTS agent_insurer_details;") // Drop previous attempt too
-	log.Println("DATABASE: Dropped old insurer contact tables if they existed.")
+	_, _ = db.Exec("DROP TABLE IF EXISTS agent_insurer_details;")
+	log.Println("DATABASE: Dropped old insurer contact tables (agent_insurer_pocs, agent_insurer_details) if they existed.")
 
-	// NEW/UPDATED: Agent Insurer Relations Table
+	// This agent_insurer_relations table seems to be the most comprehensive version.
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_insurer_relations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		agent_user_id INTEGER NOT NULL,
-		insurer_name TEXT NOT NULL,
-		agent_code TEXT,
-		spoc_email TEXT,
-		upfront_commission_percentage REAL,
-		trail_commission_percentage REAL,
-		name TEXT NOT NULL,
-		category TEXT NOT NULL,
-		description TEXT,
-		status TEXT NOT NULL,
-		features TEXT,
-		eligibility TEXT,
-		term TEXT,
-		exclusions TEXT,
-		room_rent TEXT,
-		premium_indication TEXT,
-		insurer_logo_url TEXT,
-		brochure_url TEXT,
-		wording_url TEXT,
-		claim_form_url TEXT,
-		product_id TEXT,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP,
-		FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
-		UNIQUE(agent_user_id, insurer_name)
-	);`, "agent_insurer_relations"); err != nil {
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        agent_user_id INT NOT NULL,
+        insurer_name VARCHAR(255) NOT NULL,
+        agent_code VARCHAR(100),
+        spoc_email VARCHAR(255),
+        upfront_commission_percentage DOUBLE,
+        trail_commission_percentage DOUBLE,
+        name VARCHAR(255) NOT NULL, -- This seems to be Product Name
+        category VARCHAR(100) NOT NULL, -- This seems to be Product Category
+        description TEXT,
+        status VARCHAR(50) NOT NULL, -- Product status
+        features TEXT,
+        eligibility TEXT,
+        term VARCHAR(100),
+        exclusions TEXT,
+        room_rent VARCHAR(100),
+        premium_indication VARCHAR(255),
+        insurer_logo_url VARCHAR(2083),
+        brochure_url VARCHAR(2083),
+        wording_url VARCHAR(2083),
+        claim_form_url VARCHAR(2083),
+        product_id VARCHAR(100), -- Reference to the products table's ID
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (agent_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        -- Consider adding FOREIGN KEY (product_id) REFERENCES products(id) if product_id here must exist in products table
+        UNIQUE(agent_user_id, insurer_name, product_id) -- More likely unique constraint
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "agent_insurer_relations"); err != nil {
 		return err
 	}
 
-	// NEW: Agent Goals Table
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_goals (
-        user_id INTEGER PRIMARY KEY,
-        target_income REAL,
-        target_period TEXT, -- e.g., "2025-Q2", "2025-Annual"
+        user_id INT PRIMARY KEY,
+        target_income DECIMAL(15, 2),
+        target_period VARCHAR(50), -- e.g., "2025-Q2", "2025-Annual"
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );`, "agent_goals"); err != nil {
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`, "agent_goals"); err != nil {
 		return err
 	}
+
 	log.Println("DATABASE: Setup complete.")
 	return nil
 }
@@ -5627,7 +5792,23 @@ func main() {
 	if frontendURLEnv == "" {
 		frontendURLEnv = "http://localhost:3001"
 	} // Default frontend URL
+	backendURLEnv := os.Getenv("BACKEND_URL")
+	if backendURLEnv == "" {
+		backendURLEnv = "http://localhost:8080"
+	} // Default frontend URL
+	dbDSN := os.Getenv("DB_DSN")
 
+	// Fallback to manual construction if DB_DSN is not set
+	if dbDSN == "" {
+		dbUser := os.Getenv("DB_USERNAME")
+		dbHost := os.Getenv("DB_HOST")
+		dbPassword := os.Getenv("DB_PASSWORD")
+		dbName := os.Getenv("DBNAME")
+
+		dbDSN = dbUser + ":" + dbPassword + "@tcp(" + dbHost + ")/" + dbName + "?parseTime=true"
+
+		log.Println("WARNING: DB_DSN environment variable not set, using constructed DSN. THIS IS NOT FOR PRODUCTION.")
+	}
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
 	expiryHours, err := strconv.Atoi(expiryHoursStr)
 	if err != nil || expiryHours <= 0 {
@@ -5637,7 +5818,8 @@ func main() {
 	if uploadPathEnv == "" {
 		uploadPathEnv = "./uploads"
 	}
-	config = Config{ListenAddr: ":8080", DBPath: "./clientwise.db", VerificationURL: "https://api.goclientwise.com/verify?token=", ResetURL: "https://api.goclientwise.com/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+
+	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
