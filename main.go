@@ -1284,10 +1284,11 @@ func parseIntOrNull(s string) sql.NullInt64 {
 func storeToken(userID int64, token string, purpose string, duration time.Duration) error {
 	hashedToken, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("failed to hash token: %w", err)
+		return fmt.Errorf("failed to hash1 token: %w", err)
 	}
 	expiresAt := time.Now().Add(duration)
-	stmt, err := db.Prepare("INSERT OR REPLACE INTO tokens(user_id, token_hash, purpose, expires_at) VALUES(?, ?, ?, ?)")
+	stmt, err := db.Prepare("INSERT INTO tokens(user_id, token_hash, purpose, expires_at) VALUES(?, ?, ?, ?) ON DUPLICATE KEY UPDATE token_hash = VALUES(token_hash), purpose = VALUES(purpose), expires_at = VALUES(expires_at)")
+	print("topen error%w", stmt)
 	if err != nil {
 		return fmt.Errorf("failed to prepare store token statement: %w", err)
 	}
@@ -1444,7 +1445,7 @@ func getMonthlyPolicyCount(agentUserID int64, months int) ([]MonthlySalesData, e
 	startDate := firstOfMonth.AddDate(0, -months, 0)
 
 	query := `
-		SELECT strftime('%Y-%m', start_date) as month, COUNT(*) as count
+		SELECT DATE_FORMAT(start_date, '%Y-%m') as month, COUNT(*) as count
 		FROM policies
 		WHERE agent_user_id = ? AND start_date >= ?
 		GROUP BY month
@@ -2020,7 +2021,7 @@ func getAllAgentTasks(agentUserID int64, statusFilter string, page, pageSize int
 	offset := (page - 1) * pageSize
 
 	// Base query
-	baseQuery := "FROM tasks WHERE agent_user_id = ?"
+	baseQuery := " FROM tasks WHERE agent_user_id = ? "
 	countQuery := "SELECT COUNT(*) " + baseQuery
 	dataQuery := `SELECT id, client_id, agent_user_id, description, due_date, is_urgent, is_completed, created_at, completed_at ` + baseQuery
 
@@ -2043,9 +2044,10 @@ func getAllAgentTasks(agentUserID int64, statusFilter string, page, pageSize int
 		log.Printf("ERROR: Count all tasks failed: %v", err)
 		return nil, 0, err
 	}
+	print("Data Query: ", dataQuery)
 
 	// Add ordering and pagination to data query
-	dataQuery += " ORDER BY is_completed ASC, is_urgent DESC, due_date ASC NULLS LAST, created_at DESC LIMIT ? OFFSET ?"
+	dataQuery += " ORDER BY is_completed ASC, is_urgent DESC, ISNULL(due_date) ASC, due_date ASC, created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, pageSize, offset)
 
 	// Fetch data
@@ -4119,7 +4121,7 @@ func getAgentTasks(agentUserID int64, limit int) ([]Task, error) {
 	log.Printf("DATABASE: Fetching pending tasks for agent %d (Limit: %d)\n", agentUserID, limit)
 	rows, err := db.Query(`SELECT id, client_id, agent_user_id, description, due_date, is_urgent, is_completed, created_at, completed_at
                             FROM tasks WHERE agent_user_id = ? AND is_completed = 0
-                            ORDER BY is_urgent DESC, due_date ASC NULLS LAST, created_at DESC LIMIT ?`, agentUserID, limit)
+                           ORDER BY is_urgent DESC, ISNULL(due_date) ASC, due_date ASC, created_at DESC LIMIT ?`, agentUserID, limit)
 	if err != nil {
 		log.Printf("ERROR: Query tasks failed: %v", err)
 		return nil, err
@@ -5806,7 +5808,7 @@ func main() {
 	}
 	frontendURLEnv := os.Getenv("FRONTEND_URL")
 	if frontendURLEnv == "" {
-		frontendURLEnv = "http://localhost:3001"
+		frontendURLEnv = "http://localhost:3000"
 	} // Default frontend URL
 	backendURLEnv := os.Getenv("BACKEND_URL")
 	if backendURLEnv == "" {
@@ -5820,11 +5822,21 @@ func main() {
 		dbHost := os.Getenv("DB_HOST")
 		dbPassword := os.Getenv("DB_PASSWORD")
 		dbName := os.Getenv("DBNAME")
-
-		dbDSN = dbUser + ":" + dbPassword + "@unix(" + dbHost + ")/" + dbName + "?parseTime=true"
-
+		if dbUser == "" || dbHost == "" || dbPassword == "" || dbName == "" {
+			dbUser = "root"
+			dbHost = "127.0.0.1:3306"
+			dbPassword = "admin"
+			dbName = "admin"
+		}
+		print("DB Username: ", dbUser)
+		print("DB Host: ", dbHost)
+		print("DB Password: ", dbPassword)
+		print("DB Name: ", dbName)
+		// dbDSN = dbUser + ":" + dbPassword + "@unix(" + dbHost + ")/" + dbName + "?parseTime=true"
+		dbDSN = "root:admin@tcp(localhost:3306)/admin?parseTime=true"
 		log.Println("WARNING: DB_DSN environment variable not set, using constructed DSN. THIS IS NOT FOR PRODUCTION.")
 	}
+
 	expiryHoursStr := os.Getenv("JWT_EXPIRY_HOURS")
 	expiryHours, err := strconv.Atoi(expiryHoursStr)
 	if err != nil || expiryHours <= 0 {
@@ -5835,7 +5847,7 @@ func main() {
 		uploadPathEnv = "./uploads"
 	}
 
-	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "*", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
