@@ -1126,7 +1126,7 @@ func setupDatabase() error {
 	}
 
 	// Index creation syntax is generally compatible
-	if err := execSQL(`CREATE INDEX IF NOT EXISTS idx_client_portal_tokens_expiry ON client_portal_tokens (expires_at);`, "idx_client_portal_tokens_expiry"); err != nil {
+	if err := execSQL(`DROP INDEX IF EXISTS idx_client_portal_tokens_expiry ON client_portal_tokens; CREATE INDEX idx_client_portal_tokens_expiry ON client_portal_tokens (expires_at);`, "idx_client_portal_tokens_expiry"); err != nil {
 		return err
 	}
 
