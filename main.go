@@ -1126,8 +1126,20 @@ func setupDatabase() error {
 	}
 
 	// Index creation syntax is generally compatible
-	if err := execSQL(`DROP INDEX IF EXISTS idx_client_portal_tokens_expiry ON client_portal_tokens`, "idx_client_portal_tokens_expiry_drop"); err != nil {
-		log.Printf("WARN: Could not drop index idx_client_portal_tokens_expiry (may not exist or other issue): %v", err)
+	var count int
+	err = db.QueryRow(`
+		SELECT COUNT(1)
+		FROM INFORMATION_SCHEMA.STATISTICS
+		WHERE TABLE_SCHEMA = DATABASE()
+		AND TABLE_NAME = 'client_portal_tokens'
+		AND INDEX_NAME = 'idx_client_portal_tokens_expiry';
+	`).Scan(&count)
+	if err != nil {
+		log.Printf("WARN: Could not check for existing index: %v", err)
+	} else if count > 0 {
+		if err := execSQL(`ALTER TABLE client_portal_tokens DROP INDEX idx_client_portal_tokens_expiry`, "idx_client_portal_tokens_expiry_drop"); err != nil {
+			log.Printf("WARN: Failed to drop existing index idx_client_portal_tokens_expiry: %v", err)
+		}
 	}
 
 	if err := execSQL(`CREATE INDEX idx_client_portal_tokens_expiry ON client_portal_tokens (expires_at)`, "idx_client_portal_tokens_expiry_create"); err != nil {
