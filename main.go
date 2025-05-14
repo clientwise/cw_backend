@@ -1126,8 +1126,12 @@ func setupDatabase() error {
 	}
 
 	// Index creation syntax is generally compatible
-	if err := execSQL(`DROP INDEX IF EXISTS idx_client_portal_tokens_expiry ON client_portal_tokens; CREATE INDEX idx_client_portal_tokens_expiry ON client_portal_tokens (expires_at);`, "idx_client_portal_tokens_expiry"); err != nil {
-		return err
+	if err := execSQL(`DROP INDEX IF EXISTS idx_client_portal_tokens_expiry ON client_portal_tokens`, "idx_client_portal_tokens_expiry_drop"); err != nil {
+		log.Printf("WARN: Could not drop index idx_client_portal_tokens_expiry (may not exist or other issue): %v", err)
+	}
+
+	if err := execSQL(`CREATE INDEX idx_client_portal_tokens_expiry ON client_portal_tokens (expires_at)`, "idx_client_portal_tokens_expiry_create"); err != nil {
+		return fmt.Errorf("failed to create index idx_client_portal_tokens_expiry: %w", err)
 	}
 
 	if err := execSQL(`CREATE TABLE IF NOT EXISTS agent_profiles (
