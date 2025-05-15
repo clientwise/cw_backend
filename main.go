@@ -5822,18 +5822,18 @@ func main() {
 		dbHost := os.Getenv("DB_HOST")
 		dbPassword := os.Getenv("DB_PASSWORD")
 		dbName := os.Getenv("DBNAME")
-		if dbUser == "" || dbHost == "" || dbPassword == "" || dbName == "" {
-			dbUser = "root"
-			dbHost = "127.0.0.1:3306"
-			dbPassword = "admin"
-			dbName = "admin"
-		}
+		// if dbUser == "" || dbHost == "" || dbPassword == "" || dbName == "" {
+		// 	dbUser = "root"
+		// 	dbHost = "127.0.0.1:3306"
+		// 	dbPassword = "admin"
+		// 	dbName = "admin"
+		// }
 		print("DB Username: ", dbUser)
 		print("DB Host: ", dbHost)
 		print("DB Password: ", dbPassword)
 		print("DB Name: ", dbName)
-		// dbDSN = dbUser + ":" + dbPassword + "@unix(" + dbHost + ")/" + dbName + "?parseTime=true"
-		dbDSN = "root:admin@tcp(localhost:3306)/admin?parseTime=true"
+		dbDSN = dbUser + ":" + dbPassword + "@unix(" + dbHost + ")/" + dbName + "?parseTime=true"
+		// dbDSN = "root:admin@tcp(localhost:3306)/admin?parseTime=true"
 		log.Println("WARNING: DB_DSN environment variable not set, using constructed DSN. THIS IS NOT FOR PRODUCTION.")
 	}
 
@@ -5847,7 +5847,7 @@ func main() {
 		uploadPathEnv = "./uploads"
 	}
 
-	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "*", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
