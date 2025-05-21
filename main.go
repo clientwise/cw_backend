@@ -4820,17 +4820,17 @@ func handleUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "completed" {
 		query = `
 			UPDATE tasks
-			SET status = ?, updated_at = ?, completed_at = ?
+			SET is_completed = ?, updated_at = ?, completed_at = ?
 			WHERE id = ? AND agent_user_id = ?
 		`
-		args = []interface{}{req.Status, now, now, req.TaskID, agentUserID}
+		args = []interface{}{true, now, now, req.TaskID, agentUserID}
 	} else {
 		query = `
 			UPDATE tasks
-			SET status = ?, updated_at = ?, completed_at = NULL
+			SET is_completed = ?, updated_at = ?, completed_at = NULL
 			WHERE id = ? AND agent_user_id = ?
 		`
-		args = []interface{}{req.Status, now, req.TaskID, agentUserID}
+		args = []interface{}{false, now, req.TaskID, agentUserID}
 	}
 
 	result, err = db.Exec(query, args...)
