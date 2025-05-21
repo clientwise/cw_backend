@@ -519,7 +519,7 @@ func createPolicy(policy Policy) (string, error) {
 	if !commissionPercentage.Valid && policy.ProductID.Valid {
 		product, err := getProductByID(policy.ProductID.String)
 		if err == nil && product != nil && product.UpfrontCommissionPercentage.Valid {
-			commissionPercentage = product.UpfrontCommissionPercentage
+			commissionPercentage = relation.UpfrontCommissionPercentage
 			commissionSource = "Product Rate"
 		} else if err != nil && err != sql.ErrNoRows {
 			log.Printf("WARN: Error fetching product for commission calc (Policy: %s, Product: %s): %v", policy.PolicyNumber, policy.ProductID.String, err)
@@ -2853,7 +2853,7 @@ func upsertAgentProfile(profile AgentProfile) error {
 	log.Printf("DATABASE: Upserting agent profile for user %d\n", profile.UserID)
 	// Using INSERT OR REPLACE - this replaces the entire row if user_id exists.
 	// Alternatively, use INSERT ON CONFLICT UPDATE for more granular updates.
-	stmt, err := db.Prepare(`INSERT OR REPLACE INTO agent_profiles
+	stmt, err := db.Prepare(`INSERT INTO agent_profiles
         (user_id, mobile, gender, postal_address, agency_name, pan, bank_name, bank_account_no, bank_ifsc)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
@@ -2894,7 +2894,7 @@ func getAgentGoal(userID int64) (*AgentGoal, error) {
 
 func upsertAgentGoal(goal AgentGoal) error {
 	log.Printf("DATABASE: Upserting agent goal for user %d\n", goal.UserID)
-	stmt, err := db.Prepare(`INSERT OR REPLACE INTO agent_goals (user_id, target_income, target_period) VALUES (?, ?, ?)`)
+	stmt, err := db.Prepare(`INSERT INTO agent_goals (user_id, target_income, target_period) VALUES (?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare upsert agent goal: %w", err)
 	}
@@ -4791,6 +4791,64 @@ func handleGetRenewals(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, renewals)
 }
 
+// Update /api/task/staus
+func handleUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
+	agentUserID, ok := getUserIDFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Authentication failed")
+		return
+	}
+
+	var req struct {
+		TaskID int64  `json:"taskId"`
+		Status string `json:"status"` // "pending" or "completed"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	var (
+		query  string
+		args   []interface{}
+		now    = time.Now()
+		result sql.Result
+		err    error
+	)
+
+	if req.Status == "completed" {
+		query = `
+			UPDATE tasks
+			SET status = ?, updated_at = ?, completed_at = ?
+			WHERE id = ? AND user_id = ?
+		`
+		args = []interface{}{req.Status, now, now, req.TaskID, agentUserID}
+	} else {
+		query = `
+			UPDATE tasks
+			SET status = ?, updated_at = ?, completed_at = NULL
+			WHERE id = ? AND user_id = ?
+		`
+		args = []interface{}{req.Status, now, req.TaskID, agentUserID}
+	}
+
+	result, err = db.Exec(query, args...)
+	if err != nil {
+		log.Println("Error updating task status:", err)
+		respondError(w, http.StatusInternalServerError, "Failed to update task status")
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil || rowsAffected == 0 {
+		respondError(w, http.StatusNotFound, "No task found or unauthorized")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{"message": "Task status updated successfully"})
+}
+
 // GET /api/tasks
 func handleGetAllTasks(w http.ResponseWriter, r *http.Request) {
 	agentUserID, ok := getUserIDFromContext(r.Context())
@@ -5847,7 +5905,7 @@ func main() {
 		uploadPathEnv = "./uploads"
 	}
 
-	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: frontendURLEnv, JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
+	config = Config{ListenAddr: ":8080", DBDSN: dbDSN, VerificationURL: backendURLEnv + "/verify?token=", ResetURL: backendURLEnv + "/reset-password?token=", MockEmailFrom: "clientwise.co@gmail.com", CorsOrigin: "*", JWTSecret: jwtSecretEnv, JWTExpiryHours: expiryHours, UploadPath: uploadPathEnv, FrontendURL: frontendURLEnv}
 	jwtSecretKey = []byte(config.JWTSecret)
 
 	// Initialize Database
@@ -5957,14 +6015,15 @@ func main() {
 			r.Get("/activity", handleGetDashboardActivity)
 
 		})
-		r.Get("/api/tasks", handleGetAllTasks)        // Get all tasks for agent (paginated)
+		// r.Get("/api/tasks", handleGetAllTasks)        // Get all tasks for agent (paginated)
 		r.Route("/api/policies", func(r chi.Router) { // Group policy related routes
 			r.Get("/renewals", handleGetRenewals) // Get upcoming renewals
 			// Add other policy-level routes here if needed
 		})
 
 		r.Get("/api/commissions", handleGetCommissions)
-		r.Get("/api/tasks", handleGetAllTasks) // Get all tasks for agent (paginated)
+		r.Get("/api/tasks", handleGetAllTasks)            // Get all tasks for agent (paginated)
+		r.Put("/api/task/status", handleUpdateTaskStatus) // Update task status
 		r.Get("/api/activity", handleGetFullActivityLog)
 
 	})
