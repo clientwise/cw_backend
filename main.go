@@ -4793,11 +4793,6 @@ func handleGetRenewals(w http.ResponseWriter, r *http.Request) {
 
 // Update /api/task/staus
 func handleUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
-	agentUserID, ok := getUserIDFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "Authentication failed")
-		return
-	}
 
 	var req struct {
 		TaskID int64  `json:"taskId"`
@@ -4820,17 +4815,17 @@ func handleUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "completed" {
 		query = `
 			UPDATE tasks
-			SET is_completed = ?, updated_at = ?, completed_at = ?
-			WHERE id = ? AND agent_user_id = ?
+			SET is_completed = ?, completed_at = ?
+			WHERE id = ?
 		`
-		args = []interface{}{true, now, now, req.TaskID, agentUserID}
+		args = []interface{}{true, now, req.TaskID}
 	} else {
 		query = `
 			UPDATE tasks
-			SET is_completed = ?, updated_at = ?, completed_at = NULL
-			WHERE id = ? AND agent_user_id = ?
+			SET is_completed = ?, completed_at = NULL
+			WHERE id = ?
 		`
-		args = []interface{}{false, now, req.TaskID, agentUserID}
+		args = []interface{}{false, req.TaskID}
 	}
 
 	result, err = db.Exec(query, args...)
